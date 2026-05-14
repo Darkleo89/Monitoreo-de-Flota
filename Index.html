@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitor de Flota PRO · GrupoGal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <?!= include('CSS') ?>
+</head>
+
+<body>
+
+  <!-- ══ LOGIN ══════════════════════════════════════════════════════ -->
+  <div id="login-screen">
+    <div class="login-wrap">
+
+      <div class="login-left">
+        <div class="ll-logo">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <rect width="36" height="36" rx="8" fill="#1a6ef5" />
+            <path d="M7 26L13 12L18 21L23 15L29 26H7Z" fill="white" opacity=".95" />
+          </svg>
+          <div>
+            <div class="ll-brand">Monitor de Flota PRO</div>
+            <div class="ll-sub">GrupoGal · Control Logístico v6.1</div>
+          </div>
+        </div>
+        <div class="ll-tagline">
+          Centro de mando<br>
+          <span>para tu flota en tiempo real.</span>
+        </div>
+        <div class="ll-features">
+          <div class="lf-item">
+            <div class="lf-dot" style="background:#22c55e"></div>Barrido directo desde la tabla
+          </div>
+          <div class="lf-item">
+            <div class="lf-dot" style="background:#3b82f6"></div>Protocolos de crisis integrados
+          </div>
+          <div class="lf-item">
+            <div class="lf-dot" style="background:#f59e0b"></div>Timers de clima con alerta visual
+          </div>
+          <div class="lf-item">
+            <div class="lf-dot" style="background:#a855f7"></div>Traspaso entre circuitos
+          </div>
+        </div>
+      </div>
+
+      <div class="login-right">
+        <div class="login-card">
+          <div class="lc-title">Acceso al sistema</div>
+          <div class="lc-sub">Sesión protegida · Token 8 horas</div>
+          <div id="login-error" class="msg-error hidden"></div>
+          <div class="field-group">
+            <label>Usuario</label>
+            <input id="l-usuario" type="text" placeholder="Tu usuario" autocomplete="username">
+          </div>
+          <div class="field-group">
+            <label>Contraseña</label>
+            <div class="pass-wrap">
+              <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+              <button class="pass-toggle" type="button" onclick="togglePass()">
+              <svg id="eyeIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+            </div>
+          </div>
+          <div class="field-group">
+            <label>Estación de monitoreo</label>
+            <select id="l-estacion"><option value="">Cargando estaciones…</option></select>
+          </div>
+          <button class="btn-login" id="btnLogin" onclick="doLogin()">
+          <span class="spin hidden" id="loginSpin"></span>
+          <span id="loginTxt">Iniciar sesión</span>
+        </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ APP ════════════════════════════════════════════════════════ -->
+  <div id="app" class="hidden">
+
+    <!-- TOPBAR -->
+    <header id="topbar">
+      <div class="tb-left">
+        <div class="tb-logo">
+          <svg width="20" height="20" viewBox="0 0 36 36" fill="none">
+            <rect width="36" height="36" rx="7" fill="#1a6ef5" />
+            <path d="M7 26L13 12L18 21L23 15L29 26H7Z" fill="white" opacity=".95" />
+          </svg>
+        </div>
+        <span class="tb-brand">Monitor Flota PRO</span>
+        <div class="tb-sep"></div>
+        <div class="estacion-tabs" id="estacionTabs"></div>
+      </div>
+      <div class="tb-center">
+        <div class="ticker" id="ticker">
+          <span class="ticker-dot"></span>
+          <span id="tickerTxt">Sistema en línea</span>
+        </div>
+      </div>
+      <div class="tb-right">
+        <div id="climaChips"></div>
+
+        <!-- ← NUEVO: Panel de alertas Samsara -->
+        <div style="position:relative">
+          <button class="tb-btn" id="btnAlertasSamsara" title="Alertas Samsara"
+                  onclick="togglePanelAlertas()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+            <span class="ni-badge hidden" id="nb-samsara">0</span>
+          </button>
+          <div id="panelAlertasSamsara" class="panel-alertas hidden">
+            <div class="pa-head">
+              <div class="pa-title">Alertas Samsara</div>
+              <button class="modal-close" onclick="togglePanelAlertas()">✕</button>
+            </div>
+            <div id="alertasSamsaraList" class="pa-body"></div>
+          </div>
+        </div>
+
+        <div class="tb-clock" id="reloj"></div>
+        <div class="tb-user">
+          <div class="tu-avatar" id="tuAvatar">?</div>
+          <div class="tu-info">
+            <div class="tu-name" id="tuName">—</div>
+            <div class="tu-meta" id="tuMeta">—</div>
+          </div>
+        </div>
+        <button class="tb-btn" onclick="abrirRelevo()" title="Entrega de turno">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/>
+        </svg>
+        </button>
+        <button class="tb-btn tb-btn-danger" onclick="doLogout()" title="Cerrar sesión">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+        </svg>
+         </button>
+      </div>
+    </header>
+
+    <!-- SIDEBAR -->
+    <nav id="sidebar">
+      <div class="nav-section">
+        <div class="ns-label">Operación</div>
+        <div class="nav-item active" data-view="dashboard" onclick="showView('dashboard',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+          </svg>
+          <span>Centro de Mando</span>
+          <span class="ni-badge hidden" id="nb-dashboard">0</span>
+        </div>
+        <div class="nav-item" data-view="enganche" onclick="showView('enganche',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+          <span>Enganche</span>
+          <span class="ni-pill">D&amp;D</span>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="ns-label">Control</div>
+        <div class="nav-item" data-view="sla" onclick="showView('sla',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          <span>Tareas SLA</span>
+          <span class="ni-badge hidden" id="nb-sla">0</span>
+        </div>
+        <div class="nav-item" data-view="novedades" onclick="showView('novedades',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <span>Novedades</span>
+          <span class="ni-badge hidden" id="nb-novedades">0</span>
+        </div>
+        <div class="nav-item" data-view="traspasos" onclick="showView('traspasos',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <polyline points="17 1 21 5 17 9" />
+            <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+            <polyline points="7 23 3 19 7 15" />
+            <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+          </svg>
+          <span>Traspasos</span>
+          <span class="ni-badge hidden" id="nb-traspasos">0</span>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="ns-label">Bitácora</div>
+        <div class="nav-item" data-view="historial" onclick="showView('historial',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <line x1="8" y1="6" x2="21" y2="6" />
+            <line x1="8" y1="12" x2="21" y2="12" />
+            <line x1="8" y1="18" x2="21" y2="18" />
+            <line x1="3" y1="6" x2="3.01" y2="6" />
+            <line x1="3" y1="12" x2="3.01" y2="12" />
+            <line x1="3" y1="18" x2="3.01" y2="18" />
+          </svg>
+          <span>Historial</span>
+        </div>
+        <div class="nav-item" data-view="movimientos" onclick="showView('movimientos',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="1" y="3" width="15" height="13" />
+            <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+            <circle cx="5.5" cy="18.5" r="2.5" />
+            <circle cx="18.5" cy="18.5" r="2.5" />
+          </svg>
+          <span>Movimientos</span>
+        </div>
+      </div>
+
+      <div class="nav-section hidden" id="navSupervisor">
+        <div class="ns-label">Supervisor</div>
+        <div class="nav-item" data-view="reportes" onclick="showView('reportes',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <line x1="18" y1="20" x2="18" y2="10" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="6" y1="20" x2="6" y2="14" />
+          </svg>
+          <span>Reportes</span>
+        </div>
+        <div class="nav-item" data-view="unidades" onclick="showView('unidades',this)">
+          <svg class="ni-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="1" y="3" width="15" height="13" />
+            <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+            <circle cx="5.5" cy="18.5" r="2.5" />
+            <circle cx="18.5" cy="18.5" r="2.5" />
+          </svg>
+          <span>Unidades</span>
+        </div>
+      </div>
+
+      <div class="sidebar-foot">
+        <div class="poll-dot" id="pollDot"></div>
+        <span id="pollLbl">Sincronizando…</span>
+      </div>
+    </nav>
+
+    <!-- MAIN -->
+    <main id="main">
+
+      <!-- ── DASHBOARD ─────────────────────────────────────────── -->
+      <div class="view active" id="view-dashboard">
+
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kc-val" id="kpi-total">—</div>
+            <div class="kc-lbl">Unidades</div>
+          </div>
+          <div class="kpi-card kc-green">
+            <div class="kc-val" id="kpi-carg">—</div>
+            <div class="kc-lbl">Cargadas</div>
+          </div>
+          <div class="kpi-card kc-muted">
+            <div class="kc-val" id="kpi-vac">—</div>
+            <div class="kc-lbl">Vacías</div>
+          </div>
+          <div class="kpi-card kc-teal">
+            <div class="kc-val" id="kpi-sub">—</div>
+            <div class="kc-lbl">↑ Subida</div>
+          </div>
+          <div class="kpi-card kc-blue">
+            <div class="kc-val" id="kpi-baj">—</div>
+            <div class="kc-lbl">↓ Bajada</div>
+          </div>
+          <div class="kpi-card kc-red">
+            <div class="kc-val" id="kpi-det">—</div>
+            <div class="kc-lbl">Detenidas</div>
+          </div>
+          <div class="kpi-card kc-yellow">
+            <div class="kc-val" id="kpi-sin">—</div>
+            <div class="kc-lbl">Sin barrido</div>
+          </div>
+          <div class="kpi-card kc-purple">
+            <div class="kc-val" id="kpi-comp">—</div>
+            <div class="kc-lbl">Compartidas</div>
+          </div>
+
+        </div>
+
+        <div class="dash-grid">
+
+          <div class="panel panel-flota">
+            <div class="panel-head">
+              <div class="ph-left">
+                <span class="ph-title">Flota en operación</span>
+                <span class="ph-count" id="flotaCount">—</span>
+              </div>
+              <div class="ph-right">
+                <input class="search-inp" id="dashSearch" type="text"
+                     placeholder="Buscar unidad…" oninput="filtrarFlota(this.value)">
+                <div class="filter-row" id="filterSentido">
+                  <button class="fb active" data-val="" onclick="setFiltroSentido('',this)">Todos</button>
+                  <button class="fb" data-val="SUBIDA"   onclick="setFiltroSentido('SUBIDA',this)">↑ Sub</button>
+                  <button class="fb" data-val="BAJADA"   onclick="setFiltroSentido('BAJADA',this)">↓ Baj</button>
+                  <button class="fb fb-red" data-val="ALERTA" onclick="setFiltroSentido('ALERTA',this)">Alerta</button>
+                </div>
+                <button class="btn-icon" onclick="cargarFlota()" title="Actualizar">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+              </button>
+              </div>
+            </div>
+
+            <div class="tbl-wrap">
+              <table class="data-tbl" id="flotaTbl">
+                <thead>
+                  <tr>
+                    <th style="width:36px"></th>
+                    <th>Unidad</th>
+                    <th>Sentido</th>
+                    <th>Equipo</th>
+                    <th>Carga</th>
+                    <th>Tramo</th>
+                    <th>Cliente</th>
+                    <th>Destino</th>
+                    <th>Cita</th>
+                    <th>GPS-CAM-CRT</th>
+                    <th>Últ. barrido</th>
+                    <th>SLA</th>
+                  </tr>
+                </thead>
+                <tbody id="flotaBody">
+                  <tr>
+                    <td colspan="11">
+                      <div class="tbl-loading">
+                        <div class="spin"></div>Cargando flota…
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="dash-right">
+            <div class="panel panel-sm">
+              <div class="panel-head">
+                <div class="ph-title">Tareas SLA</div>
+                <button class="btn-link" onclick="showView('sla',document.querySelector('[data-view=sla]'))">Ver todas →</button>
+              </div>
+              <div id="dashSLA">
+                <div class="empty-sm">Sin tareas pendientes</div>
+              </div>
+            </div>
+            <div class="panel panel-sm">
+              <div class="panel-head">
+                <div class="ph-title">Novedades activas</div>
+                <button class="btn-link" onclick="showView('novedades',document.querySelector('[data-view=novedades]'))">Ver todas →</button>
+              </div>
+              <div id="dashNov">
+                <div class="empty-sm">Sin novedades</div>
+              </div>
+            </div>
+            <div class="panel panel-sm">
+              <div class="panel-head">
+                <div class="ph-title">Timers clima</div>
+              </div>
+              <div id="dashTimers">
+                <div class="empty-sm">Sin timers activos</div>
+              </div>
+            </div>
+            <div class="panel panel-sm">
+              <div class="panel-head">
+                <div class="ph-title">Compartidas</div>
+                <button class="btn-link" onclick="showView('traspasos',document.querySelector('[data-view=traspasos]'))">Ver →</button>
+              </div>
+              <div id="dashTransito">
+                <div class="empty-sm">Sin unidades compartidas</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ENGANCHE D&D ───────────────────────────────────────── -->
+      <div class="view hidden" id="view-enganche">
+        <div class="view-head">
+          <div class="vh-title">Enganche Visual</div>
+          <div class="vh-hint">Arrastra una unidad sobre un remolque o dolly</div>
+        </div>
+        <div class="enganche-layout">
+          <div class="eng-col panel">
+            <div class="panel-head">
+              <div class="ph-title">Unidades</div>
+              <span class="ph-count" id="engUniCount">0</span>
+            </div>
+            <div class="eng-pool" id="engUniPool">
+              <div class="tbl-loading">
+                <div class="spin"></div>
+              </div>
+            </div>
+          </div>
+          <div class="eng-dropzone" id="engDropzone">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+              opacity=".3">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            <div class="edz-label">Zona de enganche</div>
+            <div class="edz-hint">Suelta aquí</div>
+          </div>
+          <div class="eng-col panel">
+            <div class="panel-head">
+              <div class="ph-title">Remolques y Dollys</div>
+              <span class="ph-count" id="engEquiCount">0</span>
+            </div>
+            <div class="eng-pool" id="engEquiPool">
+              <div class="tbl-loading">
+                <div class="spin"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="panel mt12">
+          <div class="panel-head">
+            <div class="ph-title">Enganches del día</div>
+            <button class="btn-icon" onclick="cargarMovimientos()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+          </button>
+          </div>
+          <div id="engLog">
+            <div class="empty-sm">Sin enganches hoy</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SLA ──────────────────────────────────────────────── -->
+      <div class="view hidden" id="view-sla">
+        <div class="view-head">
+          <div class="vh-title">Tareas SLA — Cronómetros en vivo</div>
+          <button class="btn-icon" onclick="cargarSLA()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        </div>
+        <div id="slaList">
+          <div class="tbl-loading">
+            <div class="spin"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── NOVEDADES ─────────────────────────────────────────── -->
+      <div class="view hidden" id="view-novedades">
+        <div class="view-head">
+          <div class="vh-title">Novedades / Incidencias</div>
+          <div class="vh-actions">
+            <div class="hidden" id="novFiltroFechas">
+              <input type="date" id="novDesde" class="inp-date">
+              <span style="color:var(--txt3);font-size:12px">a</span>
+              <input type="date" id="novHasta" class="inp-date">
+              <button class="btn-sm-primary" onclick="cargarNovedades()">Filtrar</button>
+            </div>
+            <button class="btn-icon" onclick="cargarNovedades()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+          </button>
+          </div>
+        </div>
+        <div id="novList">
+          <div class="tbl-loading">
+            <div class="spin"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TRASPASOS ─────────────────────────────────────────── -->
+      <div class="view hidden" id="view-traspasos">
+        <div class="view-head">
+          <div class="vh-title">Traspasos entre Circuitos</div>
+          <button class="btn-icon" onclick="cargarTraspasos()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        </div>
+        <div class="panel">
+          <div class="tbl-wrap">
+            <table class="data-tbl">
+              <thead>
+                <tr>
+                  <th>Unidad</th>
+                  <th>Origen</th>
+                  <th>Destino</th>
+                  <th>Equipo</th>
+                  <th>Desde</th>
+                  <th>Monitorista</th>
+                  <th>Estado</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="traspasosBody">
+                <tr>
+                  <td colspan="8">
+                    <div class="tbl-loading">
+                      <div class="spin"></div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── HISTORIAL ─────────────────────────────────────────── -->
+      <div class="view hidden" id="view-historial">
+        <div class="view-head">
+          <div class="vh-title">Historial de Barridos</div>
+          <div class="vh-actions">
+            <div class="hidden" id="histFiltroFechas">
+              <input type="date" id="histDesde" class="inp-date">
+              <span style="color:var(--txt3);font-size:12px">a</span>
+              <input type="date" id="histHasta" class="inp-date">
+              <button class="btn-sm-primary" onclick="cargarHistorial()">Filtrar</button>
+            </div>
+            <select class="inp-select" id="histFiltroUnidad" onchange="cargarHistorial()">
+            <option value="">Todas las unidades</option>
+          </select>
+            <button class="btn-icon" onclick="cargarHistorial()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+          </button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="tbl-wrap">
+            <table class="data-tbl">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Unidad</th>
+                  <th>Remolque</th>
+                  <th>Dolly</th>
+                  <th>Sentido</th>
+                  <th>Carga</th>
+                  <th>GPS</th>
+                  <th>Cam</th>
+                  <th>Corte</th>
+                  <th>Min prev.</th>
+                  <th>SLA</th>
+                  <th>Incidencias</th>
+                </tr>
+              </thead>
+              <tbody id="histBody">
+                <tr>
+                  <td colspan="12">
+                    <div class="tbl-loading">
+                      <div class="spin"></div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MOVIMIENTOS ───────────────────────────────────────── -->
+      <div class="view hidden" id="view-movimientos">
+        <div class="view-head">
+          <div class="vh-title">Movimientos de Equipo</div>
+        </div>
+        <div class="mov-layout">
+          <div class="panel">
+            <div class="panel-head">
+              <div class="ph-title">Registrar movimiento</div>
+            </div>
+            <div style="padding:14px">
+              <div class="bf-section">
+                <div class="bf-label">Tipo</div>
+                <div class="tog-row" id="togMovTipo">
+                  <div class="tog tog-active-blue" data-val="ENGANCHE" onclick="setTog('togMovTipo',this,'blue')">
+                    Enganche</div>
+                  <div class="tog" data-val="CAMBIO_EQUIPO" onclick="setTog('togMovTipo',this,'purple')">Cambio equipo
+                  </div>
+                  <div class="tog" data-val="DEJA_EQUIPO" onclick="setTog('togMovTipo',this,'yellow')">Deja en patio
+                  </div>
+                  <div class="tog" data-val="RECOGE_EQUIPO" onclick="setTog('togMovTipo',this,'green')">Recoge de patio
+                  </div>
+                </div>
+              </div>
+              <div class="lf-row">
+                <div class="field-group"><label>Unidad</label>
+                  <select id="mv-unidad" onchange="onMvUnidadChange()"><option value="">— seleccionar —</option></select>
+                </div>
+                <div class="field-group"><label>Remolque anterior</label>
+                  <select id="mv-rem-ant"><option value="">— ninguno —</option></select>
+                </div>
+                <div class="field-group"><label>Remolque nuevo</label>
+                  <select id="mv-rem-nvo"><option value="">— ninguno —</option></select>
+                </div>
+              </div>
+              <div class="lf-row">
+                <div class="field-group"><label>Dolly anterior</label>
+                  <select id="mv-dol-ant"><option value="">— ninguno —</option></select>
+                </div>
+                <div class="field-group"><label>Dolly nuevo</label>
+                  <select id="mv-dol-nvo"><option value="">— ninguno —</option></select>
+                </div>
+                <div class="field-group"><label>Ubicación</label>
+                  <input type="text" id="mv-ubic" placeholder="Patio Celaya…">
+                </div>
+              </div>
+              <div class="field-group"><label>Motivo</label>
+                <input type="text" id="mv-motivo" placeholder="Inicio de viaje…">
+              </div>
+              <div class="field-group"><label>Notas</label>
+                <textarea id="mv-notas" rows="2"></textarea>
+              </div>
+              <button class="btn-primary mt8" onclick="guardarMovimiento()">
+              <span class="spin hidden" id="spMov"></span> Registrar ✓
+            </button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div class="ph-title">Movimientos del día</div>
+              <button class="btn-icon" onclick="cargarMovimientos()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+            </button>
+            </div>
+            <div id="movLog">
+              <div class="empty-sm">Sin movimientos hoy</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REPORTES (Supervisor) ─────────────────────────────── -->
+      <div class="view hidden" id="view-reportes">
+        <div class="view-head">
+          <div class="vh-title">Reportes del turno</div>
+          <div class="vh-actions">
+            <input type="date" id="rpDesde" class="inp-date">
+            <span style="color:var(--txt3);font-size:12px">a</span>
+            <input type="date" id="rpHasta" class="inp-date">
+            <button class="btn-sm-primary" onclick="cargarReportes()">Generar</button>
+          </div>
+        </div>
+        <div id="reportesContent">
+          <div class="empty-state">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"
+              opacity=".2">
+              <line x1="18" y1="20" x2="18" y2="10" />
+              <line x1="12" y1="20" x2="12" y2="4" />
+              <line x1="6" y1="20" x2="6" y2="14" />
+            </svg>
+            <div>Selecciona un rango de fechas y presiona Generar</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── UNIDADES (Supervisor) ─────────────────────────────── -->
+      <div class="view hidden" id="view-unidades">
+        <div class="view-head">
+          <div class="vh-title">Gestión de Unidades</div>
+          <select class="inp-select" id="unidFiltroEst" onchange="cargarUnidadesSup()">
+          <option value="">Todas las estaciones</option>
+        </select>
+        </div>
+        <div class="panel">
+          <div class="tbl-wrap">
+            <table class="data-tbl">
+              <thead>
+                <tr>
+                  <th>Unidad</th>
+                  <th>Circuito</th>
+                  <th>Estación</th>
+                  <th>Estatus</th>
+                  <th>Fecha asign.</th>
+                  <th>Asignó</th>
+                  <th>Último barrido</th>
+                  <th>Min sin barr.</th>
+                  <th>Origen</th>
+                  <th>Notas</th>
+                </tr>
+              </thead>
+              <tbody id="unidBody">
+                <tr>
+                  <td colspan="10">
+                    <div class="tbl-loading">
+                      <div class="spin"></div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ══ MODALES ════════════════════════════════════════════════════ -->
+
+  <!-- Modal incidencia -->
+  <div class="modal-bg hidden" id="modalIncidencia">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">
+          Reportar incidencia —
+          <span id="incUniTitulo" style="color:var(--blue);font-family:var(--mono)"></span>
+        </div>
+        <button class="modal-close" onclick="hideModal('modalIncidencia')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group">
+          <label>Tipo de incidencia</label>
+          <select id="incTipo">
+          <option value="FALLA_MECANICA">🔧 Falla mecánica</option>
+          <option value="ACCIDENTE">💥 Accidente</option>
+          <option value="INFRACCION">📋 Infracción</option>
+          <option value="DETENIDO_AUTORIDAD">🚔 Detenido por autoridad</option>
+          <option value="CORTE_MOTOR">⚡ Corte de motor</option>
+          <option value="PESOS_DIMENSIONES">⚖ Pesos y dimensiones</option>
+          <option value="INFRACCION_DADIVA">🔶 Infracción / Dádiva</option>
+        </select>
+        </div>
+        <div class="field-group">
+          <label>Coordenadas</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="incCoord"
+                 placeholder="20.701264, -87.027284"
+                 style="flex:1;font-family:var(--mono);font-size:12px">
+            <button class="btn-gps" onclick="captureGPSModal()" style="white-space:nowrap">
+            <span class="gps-pulse"></span> GPS
+          </button>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">
+            Pega las coordenadas de Google Maps o captura con GPS
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Descripción</label>
+          <textarea id="incDesc" rows="3"
+                  placeholder="Describe brevemente lo ocurrido…"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="hideModal('modalIncidencia')">Cancelar</button>
+        <button class="btn-danger" onclick="enviarIncidencia()">
+        <span class="spin hidden" id="spInc"></span> Enviar reporte
+      </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal traspaso -->
+  <div class="modal-bg hidden" id="modalTraspaso">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">
+          Registrar traspaso —
+          <span id="trpUniTitulo" style="color:var(--blue);font-family:var(--mono)"></span>
+        </div>
+        <button class="modal-close" onclick="hideModal('modalTraspaso')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group">
+          <label>Estación destino (quien recibirá el monitoreo)</label>
+          <select id="trpDestino"><option value="">— seleccionar —</option></select>
+        </div>
+        <div class="field-group">
+          <label>Tipo de configuración</label>
+          <div class="tog-row" id="togTrpTipo">
+            <div class="tog tog-active-blue" data-val="SENCILLO"
+              onclick="setTog('togTrpTipo',this,'blue');toggleTrpTipo('SENCILLO')">Sencillo</div>
+            <div class="tog" data-val="FULL" onclick="setTog('togTrpTipo',this,'purple');toggleTrpTipo('FULL')">Full
+            </div>
+            <div class="tog" data-val="SIN_EQUIPO"
+              onclick="setTog('togTrpTipo',this,'gray');toggleTrpTipo('SIN_EQUIPO')">Sin equipo</div>
+          </div>
+        </div>
+        <div id="trpEquipoSencillo">
+          <div class="field-group"><label>Remolque</label>
+            <select id="trpRemolque"><option value="">— ninguno —</option></select>
+          </div>
+        </div>
+        <div id="trpEquipoFull" class="hidden">
+          <div class="lf-row">
+            <div class="field-group"><label>Remolque 1</label>
+              <select id="trpRem1"><option value="">— ninguno —</option></select>
+            </div>
+            <div class="field-group"><label>Dolly</label>
+              <select id="trpDolly"><option value="">— ninguno —</option></select>
+            </div>
+            <div class="field-group"><label>Remolque 2</label>
+              <select id="trpRem2"><option value="">— ninguno —</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Observaciones</label>
+          <textarea id="trpObs" rows="2" placeholder="Ruta, carga, instrucciones especiales…"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="hideModal('modalTraspaso')">Cancelar</button>
+        <button class="btn-primary" onclick="confirmarTraspaso()">
+        <span class="spin hidden" id="spTrp"></span> Registrar traspaso ✓
+      </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal protocolo -->
+  <div class="modal-bg hidden" id="modalProtocolo">
+    <div class="modal modal-proto">
+      <div class="modal-head">
+        <div class="modal-title" id="protoTitle">Protocolo</div>
+        <div class="proto-urgente">⚠ URGENTE — Sigue los pasos en orden</div>
+        <button class="modal-close" onclick="hideModal('modalProtocolo')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="protoPasos"></div>
+        <div class="proto-foot">
+          <button class="btn-ghost" onclick="marcarCorreoEnviado()">Cerrar protocolo</button>
+          <button class="btn-primary" onclick="marcarCorreoEnviado();showView('sla',document.querySelector('[data-view=sla]'))">Ver Tareas SLA →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal enganche confirmación -->
+  <div class="modal-bg hidden" id="modalEnganche">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">Confirmar Enganche</div>
+        <button class="modal-close" onclick="hideModal('modalEnganche')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="eng-confirm">
+          <div class="ec-box ec-uni" id="ecUni">—</div>
+          <div class="ec-arrow">→</div>
+          <div class="ec-box ec-equi" id="ecEqui">—</div>
+        </div>
+        <div class="field-group mt8"><label>Ubicación del enganche</label>
+          <input type="text" id="ec-ubic" placeholder="Patio Celaya…">
+        </div>
+        <div class="field-group"><label>Motivo</label>
+          <input type="text" id="ec-motivo" placeholder="Inicio de viaje…">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="hideModal('modalEnganche')">Cancelar</button>
+        <button class="btn-primary" onclick="confirmarEnganche()">
+        <span class="spin hidden" id="spEnganche"></span> Confirmar ✓
+      </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal nota (Supervisor) -->
+  <div class="modal-bg hidden" id="modalNota">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">Nota — <span id="notaUnidadTitulo"></span></div>
+        <button class="modal-close" onclick="hideModal('modalNota')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group"><label>Nota</label>
+          <textarea id="notaTexto" rows="4" placeholder="Escribe la nota…"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="hideModal('modalNota')">Cancelar</button>
+        <button class="btn-primary" onclick="guardarNota()">
+        <span class="spin hidden" id="spNota"></span> Guardar
+      </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal relevo -->
+  <div class="modal-bg hidden" id="modalRelevo">
+    <div class="modal modal-lg">
+      <div class="modal-head">
+        <div class="modal-title">Entrega de turno</div>
+        <button class="modal-close" onclick="hideModal('modalRelevo')">✕</button>
+      </div>
+      <div class="modal-body" id="relevoBody">
+        <div class="tbl-loading">
+          <div class="spin"></div>Generando resumen…
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="hideModal('modalRelevo')">Cerrar</button>
+        <button class="btn-danger" onclick="confirmarRelevo()">Cerrar turno y salir</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastCont"></div>
+  <?!= include('JS') ?>
+</body>
+
+</html>

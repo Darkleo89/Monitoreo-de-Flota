@@ -1,0 +1,1892 @@
+<script>
+  // ╔══════════════════════════════════════════════════════════════╗
+// ║  MONITOR DE FLOTA PRO — JS.html v6.1                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+const APP = {
+  token:       null,
+  usuario:     null,
+  estacion:    null,
+  estaciones:  [],
+  flota:       [],
+  remolques:   [],
+  dollys:      [],
+  slaItems:    [],
+  climaTimers: [],
+  enTransito:  [],
+  filaAbierta: null,
+  inlineState: {},
+  incUnidad:   null,
+  incRemolque: null,
+  trpUnidad:   null,
+  trpTipo:     'SENCILLO',
+  notaUnidad:  null,
+  dragUni:     null,
+  pendingEng:  null,
+  protoSLAivl: null,
+  protoIncId:  null,
+  pollIvl:     null,
+  slaIvl:      null,
+  climaIvl:    null,
+  filtroSentido: '',
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════════════════════════
+window.onload = () => {
+  iniciarReloj();
+  cargarEstacionesLogin();
+};
+
+function iniciarReloj() {
+  const el   = document.getElementById('reloj');
+  const tick = () => {
+    el.textContent = new Date().toLocaleString('es-MX', {
+      weekday:'short', day:'2-digit', month:'short',
+      hour:'2-digit', minute:'2-digit', second:'2-digit',
+    });
+  };
+  tick();
+  setInterval(tick, 1000);
+}
+
+function cargarEstacionesLogin() {
+google.script.run
+    .withSuccessHandler(data => {
+      APP.estaciones = data || [];
+      const sel = document.getElementById('l-estacion');
+      sel.innerHTML = data.length
+        ? data.map(e => `<option value="${e.circuito}">${e.detalle}</option>`).join('')
+        : '<option value="">Sin estaciones configuradas</option>';
+    })
+    .withFailureHandler(() => {
+      document.getElementById('l-estacion').innerHTML =
+        '<option value="">Error al cargar estaciones</option>';
+    })
+    .obtenerEstacionesPublico();
+}
+
+function togglePass() {
+  const inp = document.getElementById('l-pass');
+  inp.type  = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  LOGIN / LOGOUT
+// ══════════════════════════════════════════════════════════════════
+function doLogin() {
+  const usuario  = document.getElementById('l-usuario').value.trim();
+  const pass     = document.getElementById('l-pass').value;
+  const estacion = document.getElementById('l-estacion').value;
+  const errEl    = document.getElementById('login-error');
+
+  if (!usuario || !pass || !estacion) {
+    errEl.textContent = 'Completa todos los campos.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  errEl.classList.add('hidden');
+
+  const btn = document.getElementById('btnLogin');
+  const sp  = document.getElementById('loginSpin');
+  const txt = document.getElementById('loginTxt');
+  btn.disabled = true;
+  sp.classList.remove('hidden');
+  txt.textContent = 'Iniciando sesión…';
+
+google.script.run
+    .withSuccessHandler(res => {
+      btn.disabled = false;
+      sp.classList.add('hidden');
+      txt.textContent = 'Iniciar sesión';
+      if (res.ok) {
+        APP.token    = res.token;
+APP.usuario  = res.usuario;
+APP.estacion = estacion;
+APP.estaciones = APP.estaciones.length ? APP.estaciones : [{ circuito: estacion, detalle: estacion }];
+iniciarApp();
+      } else {
+        errEl.textContent = res.msg || 'Error al iniciar sesión.';
+        errEl.classList.remove('hidden');
+      }
+    })
+    .withFailureHandler(e => {
+      btn.disabled = false;
+      sp.classList.add('hidden');
+      txt.textContent = 'Iniciar sesión';
+      errEl.textContent = 'Error de conexión: ' + e.message;
+      errEl.classList.remove('hidden');
+    })
+    .login(usuario, pass, estacion);
+}
+
+function doLogout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  if (APP.token) google.script.run.withSuccessHandler(() => {}).logout(APP.token);
+  limpiarPolling();
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('login-screen').style.display = '';
+  Object.assign(APP, { token:null, usuario:null, estacion:null, flota:[] });
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  INICIAR APP
+// ══════════════════════════════════════════════════════════════════
+function iniciarApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').classList.remove('hidden');
+
+  const u = APP.usuario;
+  document.getElementById('tuName').textContent   = u.nombre;
+  document.getElementById('tuMeta').textContent   = u.rol + ' · ' + u.estacion;
+  document.getElementById('tuAvatar').textContent = u.nombre.charAt(0).toUpperCase();
+
+  const esSup = ['Supervisor','Admin'].includes(u.rol);
+  if (esSup) document.getElementById('navSupervisor').classList.remove('hidden');
+  ['novFiltroFechas','histFiltroFechas'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', !esSup);
+  });
+
+renderEstacionTabs();
+cargarCatalogos();
+setTimeout(cargarFlota, 300);
+
+  APP.pollIvl  = setInterval(cargarFlota, 15000);
+  APP.slaIvl   = setInterval(tickSLA, 30000);
+  APP.climaIvl = setInterval(tickClima, 1000);
+  
+  // Webhook escucha alertas en tiempo real
+  // No necesitas polling, las alertas llegan automáticamente
+  
+  // Si quieres recargar novedades cuando llegue una alerta:
+  // Usa un cliente SSE o WebSocket (opcional, más avanzado)
+}
+
+function limpiarPolling() {
+  [APP.pollIvl, APP.slaIvl, APP.climaIvl, APP.samsaraIvl].forEach(clearInterval);
+}
+
+function cargarCatalogos() {
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res.ok) return;
+      APP.remolques = res.remolques || [];
+      APP.dollys    = res.dollys    || [];
+      _poblarSelectEquipo('trpRemolque', APP.remolques);
+      _poblarSelectEquipo('trpRem1',     APP.remolques);
+      _poblarSelectEquipo('trpRem2',     APP.remolques);
+      _poblarSelectEquipo('trpDolly',    APP.dollys);
+    })
+    .withFailureHandler(() => {})
+    .obtenerRemolquesCatalogo(APP.token);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  TABS DE ESTACIÓN
+// ══════════════════════════════════════════════════════════════════
+function renderEstacionTabs() {
+  const cont  = document.getElementById('estacionTabs');
+  const esSup = ['Supervisor','Admin'].includes(APP.usuario.rol);
+  const lista = esSup ? APP.estaciones
+    : APP.estaciones.filter(e => e.circuito === APP.estacion);
+
+  const src = lista.length ? lista : [{ circuito:APP.estacion, detalle:APP.estacion }];
+  cont.innerHTML = src.map(e =>
+    '<div class="est-tab' + (e.circuito === APP.estacion ? ' active' : '') + '"' +
+    ' data-est="' + e.circuito + '"' +
+    ' onclick="cambiarEstacion(\'' + e.circuito + '\')">' +
+    (e.detalle || e.circuito) + '</div>'
+  ).join('');
+}
+
+function cambiarEstacion(est) {
+  APP.estacion    = est;
+  APP.filaAbierta = null;
+  document.querySelectorAll('.est-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.est === est)
+  );
+  cargarFlota();
+  toast('Estación: ' + est, 'info');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  NAVEGACIÓN
+// ══════════════════════════════════════════════════════════════════
+function showView(id, el) {
+  document.querySelectorAll('.view').forEach(v => {
+    v.classList.add('hidden');
+    v.classList.remove('active');
+  });
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const v = document.getElementById('view-' + id);
+  if (!v) return;
+  v.classList.remove('hidden');
+  v.classList.add('active');
+  if (el) el.classList.add('active');
+
+  var loaders = {
+    enganche:    function() { cargarEnganchePool(); cargarMovimientos(); },
+    sla:         cargarSLA,
+    novedades:   cargarNovedades,
+    traspasos:   cargarTraspasos,
+    historial:   function() { cargarHistorial(); poblarFiltroUnidad(); },
+    movimientos: function() { cargarSelMovimientos(); cargarMovimientos(); },
+    reportes:    function() {},
+    unidades:    cargarUnidadesSup,
+  };
+  if (loaders[id]) loaders[id]();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  FLOTA / DASHBOARD
+// ══════════════════════════════════════════════════════════════════
+function cargarFlota() {
+  setPoll(true);
+  google.script.run
+.withSuccessHandler(res => {
+      setPoll(false);
+      console.log('obtenerEstadoFlota res:', JSON.stringify(res));
+      if (!res || !res.ok) {
+        toast((res && res.msg) || 'Error al obtener flota', 'err');
+        document.getElementById('flotaBody').innerHTML =
+          '<tr><td colspan="11"><div class="empty-state"><div>Error — reintentando en 15s…</div></div></td></tr>';
+        return;
+      }
+
+      APP.flota       = res.unidades    || [];
+      APP.slaItems    = res.tareasSLA   || [];
+      APP.climaTimers = res.timers      || [];
+      APP.enTransito  = res.enTransito  || [];
+      const r         = res.resumen     || {};
+
+      _setTxt('kpi-total', r.total       != null ? r.total       : '—');
+      _setTxt('kpi-carg',  r.cargadas    != null ? r.cargadas    : '—');
+      _setTxt('kpi-vac',   r.vacias      != null ? r.vacias      : '—');
+      _setTxt('kpi-sub',   r.subida      != null ? r.subida      : '—');
+      _setTxt('kpi-baj',   r.bajada      != null ? r.bajada      : '—');
+      _setTxt('kpi-det',   r.detenidas   != null ? r.detenidas   : '—');
+      _setTxt('kpi-sin',   r.sinBarrido  != null ? r.sinBarrido  : '—');
+      _setTxt('kpi-comp',  r.compartidas != null ? r.compartidas : '—');
+      _setTxt('flotaCount', (r.total || 0) + ' unidades');
+
+      setBadge('nb-dashboard', res.tareasCriticas || 0);
+      setBadge('nb-sla',       APP.slaItems.length);
+      setBadge('nb-novedades', res.novedades ? res.novedades.length : 0);
+      setBadge('nb-traspasos', APP.enTransito.length);
+
+      actualizarTicker(res);
+      renderFlota();
+      renderDashSLA();
+      renderDashNov(res.novedades || []);
+      renderDashTimers();
+      renderDashTransito();
+    })
+    .withFailureHandler(e => {
+      setPoll(false);
+      toast('Error al cargar flota: ' + e.message, 'err');
+      document.getElementById('flotaBody').innerHTML =
+        '<tr><td colspan="11"><div class="empty-state"><div>Error de conexión — reintentando…</div></div></td></tr>';
+      setTimeout(cargarFlota, 8000);
+    })
+    .obtenerEstadoFlota(APP.token, APP.estacion);
+    console.log('llamando obtenerEstadoFlota con token=', APP.token, 'estacion=', APP.estacion);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  RENDER TABLA CON PANEL INLINE
+// ══════════════════════════════════════════════════════════════════
+function renderFlota() {
+  const body   = document.getElementById('flotaBody');
+  const query  = (document.getElementById('dashSearch') ? document.getElementById('dashSearch').value : '').toLowerCase();
+  const filtro = APP.filtroSentido || '';
+
+  const lista = APP.flota.filter(u => {
+    if (!u || !u.unidad) return false;
+    if (filtro === 'ALERTA' && !u._alertaSLA && !u._novedad) return false;
+    if (filtro && filtro !== 'ALERTA' && u._sentido !== filtro) return false;
+    if (query && u.unidad && !u.unidad.toLowerCase().includes(query)) return false;
+    return true;
+  });
+
+  console.log('renderFlota: APP.flota='+APP.flota.length+' lista='+lista.length+' filtro=['+filtro+'] query=['+query+']');
+
+  if (!lista.length) {
+    body.innerHTML = '<tr><td colspan="9">' +
+      '<div class="empty-state">' +
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".2">' +
+      '<rect x="1" y="3" width="15" height="13"/>' +
+      '<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>' +
+      '<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>' +
+      '</svg><div>Sin unidades' + (filtro ? ' con este filtro' : '') + '</div>' +
+      '</div></td></tr>';
+    return;
+  }
+
+  const sentidoBadge = {
+    SUBIDA:   '<span class="badge bg-teal">↑ Sub</span>',
+    BAJADA:   '<span class="badge bg-blue">↓ Baj</span>',
+    DETENIDO: '<span class="badge bg-red">⊗ Det</span>',
+  };
+
+  const si = function(v) {
+    return '<span class="sys-ic ' + (v==='SI'?'si-ok':v==='NO'?'si-no':'si-na') + '">' +
+           (v==='SI'?'✓':v==='NO'?'✗':'—') + '</span>';
+  };
+
+  let html = '';
+  lista.forEach(u => {
+    const uid     = u.unidad;
+    const rc      = { SUBIDA:'row-sub', BAJADA:'row-baj', DETENIDO:'row-det' }[u._sentido] || '';
+    const ra      = u._alertaSLA ? ' row-alerta' : '';
+    const abierta = APP.filaAbierta === uid;
+    const min     = u._minSin;
+    const mc      = min === null ? '' : min > 60 ? 'sla-breach' : min > 30 ? 'sla-warn' : 'sla-ok';
+    const hora    = u._ultimaHora ? fmtHora(u._ultimaHora) : '—';
+    const esComp  = u._origen === 'COMPARTIDA';
+
+    let equipoTxt = '';
+    if (u._remolque && u._dolly && u._remolque2) {
+      equipoTxt = '<span class="badge bg-purple" style="font-size:9px">Full</span> ' + u._remolque;
+    } else if (u._remolque) {
+      equipoTxt = u._remolque;
+    } else {
+      equipoTxt = '<span style="color:var(--txt3)">—</span>';
+    }
+
+    const novBadge = u._novedad
+      ? '<br><span class="badge bg-red" style="font-size:9px;margin-top:2px">🚨 ' +
+        (u._novedad.tipo || '').replace(/_/g,' ') + '</span>'
+      : '';
+
+    const compBadge = esComp
+      ? '<span class="badge bg-purple" style="font-size:9px;margin-left:4px" title="De ' +
+        u._estOrigen + '">⇄ ' + u._estOrigen + '</span>'
+      : '';
+
+    const cargaBadge = {
+      CARGADA:     '<span class="badge bg-green">Cargada</span>',
+      VACIA:       '<span class="badge bg-gray">Vacía</span>',
+      EMBALAJE:    '<span class="badge bg-yellow">Embalaje</span>',
+      DESCARGANDO: '<span class="badge bg-blue">Desc</span>',
+    }[u._cargaStatus] || '<span class="td-muted">—</span>';
+
+    html += '<tr class="data-row ' + rc + ra + (abierta ? ' row-open' : '') + '"' +
+        ' id="dr-' + uid + '"' +
+        ' onclick="toggleInline(\'' + uid + '\')">' +
+      '<td style="width:0;padding:0;border:none;overflow:hidden"></td>' +
+      '<td><span class="td-uni">' + uid + '</span>' + compBadge + novBadge + '</td>' +
+      '<td>' + (sentidoBadge[u._sentido] || '<span class="td-muted">—</span>') + '</td>' +
+      '<td class="td-mono" style="font-size:11px">' + equipoTxt + '</td>' +
+      '<td>' + cargaBadge + '</td>' +
+      '<td style="font-size:11px;color:var(--txt3)">' + (u._tramo || '—') + '</td>' +
+      '<td style="font-size:11px;color:var(--txt3)">' + (u._cliente || '—') + '</td>' +
+      '<td style="font-size:11px;color:var(--txt3)">' + (u._destino || '—') + '</td>' +
+      '<td style="font-size:11px;color:var(--txt3)">' + (u._citaDescarga ? fmtHora(u._citaDescarga) : '—') + '</td>' +
+      '<td style="text-align:center;white-space:nowrap">' + si(u._tieneGPS) + si(u._tieneCamara) + si(u._tieneCorte) + '</td>' +
+      '<td class="td-mono" style="font-size:11px">' + hora + '</td>' +
+      '<td><span class="' + mc + '">' + (min !== null && min !== undefined ? min + 'm' : '—') + '</span></td>' +
+    '</tr>';
+
+    html += '<tr class="inline-row' + (abierta ? '' : ' hidden') + '" id="ir-' + uid + '">' +
+      '<td colspan="11" style="padding:0">' +
+        (abierta ? _buildInlinePanel(u) : '') +
+      '</td></tr>';
+  });
+
+  body.innerHTML = html;
+}
+
+// Construye el HTML del panel inline para una unidad
+function _buildInlinePanel(u) {
+  const uid    = u.unidad;
+  const estado = APP.inlineState[uid] || _estadoInicial(u);
+  const esSup  = ['Supervisor','Admin'].includes(APP.usuario.rol);
+  const esComp = u._origen === 'COMPARTIDA';
+
+  const optsRem = '<option value="">— ninguno —</option>' +
+    APP.remolques.map(r =>
+      '<option value="' + r.id + '"' + (estado.rem === r.id ? ' selected' : '') + '>' + r.id + '</option>'
+    ).join('');
+  const optsDol = '<option value="">— ninguno —</option>' +
+    APP.dollys.map(d =>
+      '<option value="' + d.id + '"' + (estado.dolly === d.id ? ' selected' : '') + '>' + d.id + '</option>'
+    ).join('');
+  const optsRem2 = '<option value="">— ninguno —</option>' +
+    APP.remolques.map(r =>
+      '<option value="' + r.id + '"' + (estado.rem2 === r.id ? ' selected' : '') + '>' + r.id + '</option>'
+    ).join('');
+
+  const tipoActivo = function(t) { return estado.tipo === t ? ' il-tipo-act' : ''; };
+  const sentActivo = function(s) { return estado.sentido === s; };
+  const cargActivo = function(c) { return estado.carga === c; };
+  const sysClass   = function(on) { return on ? 'il-sys-on' : 'il-sys-off'; };
+
+  const cargaOpciones = ['CARGADA','VACIA','EMBALAJE','DESCARGANDO'].map(function(c) {
+    return '<button class="il-tog' + (cargActivo(c) ? ' il-tog-act' : '') + '"' +
+           ' onclick="setInlineCarga(\'' + uid + '\',\'' + c + '\',this)">' +
+           _cargaLbl(c) + '</button>';
+  }).join('');
+
+  const sentidoOpciones = [
+    ['SUBIDA','↑ Sub','green'],
+    ['BAJADA','↓ Baj','blue'],
+    ['DETENIDO','⊗ Det','red']
+  ].map(function(arr) {
+    const v = arr[0], l = arr[1], c = arr[2];
+    return '<button class="il-tog' + (sentActivo(v) ? ' il-tog-' + c : '') + '"' +
+           ' onclick="setInlineSentido(\'' + uid + '\',\'' + v + '\',this)">' + l + '</button>';
+  }).join('');
+
+  return '<div class="inline-panel' + (esComp ? ' inline-panel-comp' : '') + '">' +
+    (esComp ? '<div class="inline-comp-banner">⇄ Compartida de <strong>' + u._estOrigen + '</strong></div>' : '') +
+    '<div class="il-grid">' +
+
+    // Col 1: Tipo + Equipo
+    '<div class="il-col">' +
+      '<div class="il-section">' +
+        '<div class="il-label">Tipo</div>' +
+        '<div class="il-tipo-row">' +
+          '<button class="il-tipo' + tipoActivo('SENCILLO') + '" onclick="setInlineTipo(\'' + uid + '\',\'SENCILLO\')">Sencillo</button>' +
+          '<button class="il-tipo' + tipoActivo('FULL') + '" onclick="setInlineTipo(\'' + uid + '\',\'FULL\')">Full</button>' +
+          '<button class="il-tipo' + tipoActivo('SIN_EQUIPO') + '" onclick="setInlineTipo(\'' + uid + '\',\'SIN_EQUIPO\')">Sin equipo</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="il-divider"></div>' +
+      '<div class="il-section">' +
+        '<div class="il-label">Equipo</div>' +
+        '<div id="il-equipo-' + uid + '">' +
+          _buildEquipoHTML(uid, estado.tipo, optsRem, optsDol, optsRem2) +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // Col 2: Carga + Sentido + Sistemas
+    '<div class="il-col">' +
+      '<div class="il-section">' +
+        '<div class="il-label">Carga</div>' +
+        '<div class="il-tog-row">' + cargaOpciones + '</div>' +
+      '</div>' +
+      '<div class="il-divider"></div>' +
+      '<div class="il-section">' +
+        '<div class="il-label">Sentido</div>' +
+        '<div class="il-tog-row">' + sentidoOpciones + '</div>' +
+      '</div>' +
+      '<div class="il-divider"></div>' +
+      '<div class="il-section">' +
+        '<div class="il-label">Sistemas</div>' +
+        '<div class="il-sys-row">' +
+          '<button class="il-sys ' + sysClass(estado.gps) + '" onclick="toggleInlineSys(\'' + uid + '\',\'gps\',this)">GPS ' + (estado.gps ? '✓' : '✗') + '</button>' +
+          '<button class="il-sys ' + sysClass(estado.cam) + '" onclick="toggleInlineSys(\'' + uid + '\',\'cam\',this)">Cam ' + (estado.cam ? '✓' : '✗') + '</button>' +
+          '<button class="il-sys ' + sysClass(estado.corte) + '" onclick="toggleInlineSys(\'' + uid + '\',\'corte\',this)">Corte ' + (estado.corte ? '✓' : '✗') + '</button>' +
+          '<button class="il-sys ' + (estado.clima ? 'il-sys-clima' : '') + '" onclick="toggleInlineSys(\'' + uid + '\',\'clima\',this)">❄ ' + (estado.clima ? 'ON' : 'OFF') + '</button>' +
+        '</div>' +
+        (estado.clima ? '<div class="il-clima-row"><label>Min:</label>' +
+          '<input type="number" id="il-clima-min-' + uid + '" value="' + (estado.climaMins || 120) + '" min="1" max="120"></div>' : '') +
+      '</div>' +
+    '</div>' +
+
+    // Col 3: Datos de viaje
+    '<div class="il-col">' +
+      '<div class="il-label">Datos de viaje</div>' +
+      '<div class="il-section">' +
+        '<div class="il-equipo-fila"><label>Tramo</label>' +
+          '<input type="text" id="il-tramo-' + uid + '" value="' + (estado.tramo || '') + '" placeholder="Mérida-Cancún">' +
+        '</div>' +
+        '<div class="il-equipo-fila"><label>Cliente</label>' +
+          '<input type="text" id="il-cliente-' + uid + '" value="' + (estado.cliente || '') + '" placeholder="Empresa…">' +
+        '</div>' +
+        '<div class="il-equipo-fila"><label>Destino</label>' +
+          '<input type="text" id="il-destino-' + uid + '" value="' + (estado.destino || '') + '" placeholder="CEDIS…">' +
+        '</div>' +
+        '<div class="il-equipo-fila"><label>Cita</label>' +
+          '<input type="datetime-local" id="il-cita-' + uid + '" value="' + (estado.citaDescarga || '') + '">' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // Col 4: Observaciones (flex para ocupar espacio)
+    '<div class="il-col" style="min-height:0">' +
+      '<div class="il-label">Observaciones</div>' +
+      '<textarea id="il-obs-' + uid + '" class="il-obs" placeholder="Notas del barrido…">' + (estado.obs || '') + '</textarea>' +
+    '</div>' +
+
+    // Col 5: Acciones
+    '<div class="il-acciones">' +
+      '<button class="btn-primary" onclick="guardarBarridoInline(\'' + uid + '\')">' +
+        '<span class="spin hidden" id="sp-il-' + uid + '"></span>Guardar ✓' +
+      '</button>' +
+      '<button class="il-btn-inc" onclick="abrirModalIncidencia(\'' + uid + '\',\'' + (u._remolque || '') + '\')">🚨 Incidencia</button>' +
+      '<button class="il-btn-trp" onclick="abrirModalTraspaso(\'' + uid + '\')">⇄ Traspaso</button>' +
+      (esSup ? '<button class="il-btn-nota" onclick="abrirNota(\'' + uid + '\')">📝 Nota</button>' : '') +
+      (u._novedad ? '<button class="il-btn-proto" onclick="verProtocolo(\'' + u._novedad.tipo + '\',\'' + u._novedad.id + '\')">📋 Protocolo</button>' : '') +
+      (esComp && u._idTraspaso ? '<button class="il-btn-retorno" onclick="registrarRetorno(\'' + u._idTraspaso + '\')">↩ Retorno</button>' : '') +
+      '<button class="il-btn-cancel" onclick="cerrarInline(\'' + uid + '\')">Cerrar</button>' +
+    '</div>' +
+
+    '</div></div>';
+}
+
+function _buildEquipoHTML(uid, tipo, optsRem, optsDol, optsRem2) {
+  if (tipo === 'SIN_EQUIPO') {
+    return '<div class="il-sin-equipo">Sin equipo enganchado</div>';
+  }
+  if (tipo === 'FULL') {
+    return '<div class="il-equipo-fila"><label>Rem. 1</label>' +
+      '<select id="il-rem-' + uid + '" onchange="saveInlineEquipo(\'' + uid + '\')">' + optsRem + '</select></div>' +
+      '<div class="il-equipo-fila"><label>Dolly</label>' +
+      '<select id="il-dolly-' + uid + '" onchange="saveInlineEquipo(\'' + uid + '\')">' + optsDol + '</select></div>' +
+      '<div class="il-equipo-fila"><label>Rem. 2</label>' +
+      '<select id="il-rem2-' + uid + '" onchange="saveInlineEquipo(\'' + uid + '\')">' + optsRem2 + '</select></div>';
+  }
+  return '<div class="il-equipo-fila"><label>Remolque</label>' +
+    '<select id="il-rem-' + uid + '" onchange="saveInlineEquipo(\'' + uid + '\')">' + optsRem + '</select></div>';
+}
+
+function _cargaLbl(c) {
+  return { CARGADA:'Cargada', VACIA:'Vacía', EMBALAJE:'Embalaje', DESCARGANDO:'Desc.' }[c] || c;
+}
+
+function _estadoInicial(u) {
+  return {
+    tipo:      u._tipoCarga || 'SENCILLO',
+    rem:       u._remolque  || '',
+    dolly:     u._dolly     || '',
+    rem2:      u._remolque2 || '',
+    carga:     u._cargaStatus !== '—' ? u._cargaStatus : null,
+    sentido:   u._sentido !== '—'     ? u._sentido    : 'SUBIDA',
+    gps:       u._tieneGPS    === 'SI',
+    cam:       u._tieneCamara === 'SI',
+    corte:     u._tieneCorte  === 'SI',
+    clima:     false,
+    climaMins: 120,
+    obs:       '',
+    tramo:     u._tramo      || '',      // ← NUEVO
+    cliente:   u._cliente    || '',      // ← NUEVO
+    destino:   u._destino    || '',      // ← NUEVO
+    citaDescarga: u._citaDescarga || '', // ← NUEVO
+  };
+}
+
+// ── Control del panel inline ──────────────────────────────────────
+function toggleInline(uid) {
+  if (APP.filaAbierta === uid) {
+    cerrarInline(uid);
+  } else {
+    APP.filaAbierta = uid;
+    if (!APP.inlineState[uid]) {
+      const u = APP.flota.find(f => f.unidad === uid);
+      if (u) APP.inlineState[uid] = _estadoInicial(u);
+    }
+    
+    // ← NUEVO: Pausar polling mientras está abierto
+    clearInterval(APP.pollIvl);
+    
+    renderFlota();
+    setTimeout(function() {
+      var el = document.getElementById('ir-' + uid);
+      if (el) el.scrollIntoView({ behavior:'smooth', block:'nearest' });
+    }, 80);
+  }
+}
+
+function cerrarInline(uid) {
+  APP.filaAbierta = null;
+  renderFlota();
+  
+  // ← NUEVO: Reanudar polling al cerrar
+  if (APP.pollIvl) clearInterval(APP.pollIvl);
+  APP.pollIvl = setInterval(cargarFlota, 15000);
+}
+
+// ── Setters de estado inline ──────────────────────────────────────
+function setInlineTipo(uid, tipo) {
+  if (!APP.inlineState[uid]) APP.inlineState[uid] = {};
+  APP.inlineState[uid].tipo = tipo;
+  const cont = document.getElementById('il-equipo-' + uid);
+  if (!cont) return;
+  const est    = APP.inlineState[uid];
+  const optsR  = '<option value="">— ninguno —</option>' +
+    APP.remolques.map(r => '<option value="' + r.id + '"' + (est.rem===r.id?' selected':'') + '>' + r.id + '</option>').join('');
+  const optsD  = '<option value="">— ninguno —</option>' +
+    APP.dollys.map(d => '<option value="' + d.id + '"' + (est.dolly===d.id?' selected':'') + '>' + d.id + '</option>').join('');
+  const optsR2 = '<option value="">— ninguno —</option>' +
+    APP.remolques.map(r => '<option value="' + r.id + '"' + (est.rem2===r.id?' selected':'') + '>' + r.id + '</option>').join('');
+  cont.innerHTML = _buildEquipoHTML(uid, tipo, optsR, optsD, optsR2);
+  document.querySelectorAll('#ir-' + uid + ' .il-tipo').forEach(function(b) {
+    const labels = { SENCILLO:'Sencillo', FULL:'Full', SIN_EQUIPO:'Sin equipo' };
+    b.classList.toggle('il-tipo-act', b.textContent.trim() === labels[tipo]);
+  });
+}
+
+function saveInlineEquipo(uid) {
+  if (!APP.inlineState[uid]) APP.inlineState[uid] = {};
+  var r  = document.getElementById('il-rem-'   + uid);
+  var d  = document.getElementById('il-dolly-' + uid);
+  var r2 = document.getElementById('il-rem2-'  + uid);
+  APP.inlineState[uid].rem   = r  ? r.value  : '';
+  APP.inlineState[uid].dolly = d  ? d.value  : '';
+  APP.inlineState[uid].rem2  = r2 ? r2.value : '';
+}
+
+function setInlineCarga(uid, carga, btn) {
+  if (!APP.inlineState[uid]) APP.inlineState[uid] = {};
+  APP.inlineState[uid].carga = carga;
+  btn.closest('.il-tog-row').querySelectorAll('.il-tog').forEach(function(b) {
+    b.classList.remove('il-tog-act');
+  });
+  btn.classList.add('il-tog-act');
+}
+
+function setInlineSentido(uid, sentido, btn) {
+  if (!APP.inlineState[uid]) APP.inlineState[uid] = {};
+  APP.inlineState[uid].sentido = sentido;
+  const clsMap = { SUBIDA:'il-tog-green', BAJADA:'il-tog-blue', DETENIDO:'il-tog-red' };
+  btn.closest('.il-tog-row').querySelectorAll('.il-tog').forEach(function(b) {
+    b.classList.remove('il-tog-green','il-tog-blue','il-tog-red');
+  });
+  btn.classList.add(clsMap[sentido] || '');
+}
+
+function toggleInlineSys(uid, sys, btn) {
+  if (!APP.inlineState[uid]) APP.inlineState[uid] = {};
+  const est = APP.inlineState[uid];
+  est[sys] = !est[sys];
+
+  if (sys === 'clima') {
+    btn.className = 'il-sys ' + (est.clima ? 'il-sys-clima' : '');
+    btn.textContent = '❄ Clima ' + (est.clima ? 'ON' : 'OFF');
+    const row = document.querySelector('#ir-' + uid + ' .il-clima-row');
+    if (row) {
+      row.style.display = est.clima ? 'flex' : 'none';
+    } else if (est.clima) {
+      const sysRow = btn.closest('.il-sys-row');
+      const div    = document.createElement('div');
+      div.className = 'il-clima-row';
+      div.innerHTML = '<label>Min. permiso:</label>' +
+        '<input type="number" id="il-clima-min-' + uid + '" value="120" min="1" max="120" style="width:60px">';
+      sysRow.after(div);
+    }
+  } else {
+    const on = est[sys];
+    btn.className   = 'il-sys ' + (on ? 'il-sys-on' : 'il-sys-off');
+    const lbl       = { gps:'GPS', cam:'Cam', corte:'Corte' }[sys] || sys;
+    btn.textContent = lbl + ' ' + (on ? '✓' : '✗');
+  }
+}
+
+// ── Guardar barrido desde panel inline ───────────────────────────
+function guardarBarridoInline(uid) {
+  const est = APP.inlineState[uid];
+  if (!est) { toast('Error de estado interno', 'err'); return; }
+  if (!est.carga) { toast('Selecciona el estado de carga', 'warn'); return; }
+
+  var remEl   = document.getElementById('il-rem-'       + uid);
+  var dollyEl = document.getElementById('il-dolly-'     + uid);
+  var rem2El  = document.getElementById('il-rem2-'      + uid);
+  var obsEl   = document.getElementById('il-obs-'       + uid);
+  var climaEl = document.getElementById('il-clima-min-' + uid);
+
+  est.rem   = remEl   ? remEl.value   : (est.rem   || '');
+  est.dolly = dollyEl ? dollyEl.value : (est.dolly || '');
+  est.rem2  = rem2El  ? rem2El.value  : (est.rem2  || '');
+  est.obs   = obsEl   ? obsEl.value   : '';
+  const climaMins = parseInt(climaEl ? climaEl.value : '120') || 120;
+  var tramoEl   = document.getElementById('il-tramo-'   + uid);
+  var clienteEl = document.getElementById('il-cliente-' + uid);
+  var destinoEl = document.getElementById('il-destino-' + uid);
+  var citaEl    = document.getElementById('il-cita-'    + uid);
+
+  est.tramo   = tramoEl   ? tramoEl.value   : (est.tramo   || '');
+  est.cliente = clienteEl ? clienteEl.value : (est.cliente || '');
+  est.destino = destinoEl ? destinoEl.value : (est.destino || '');
+  est.citaDescarga = citaEl ? citaEl.value : (est.citaDescarga || '');
+  const datos = {
+    estacion:      APP.estacion,
+    unidad:        uid,
+    remolque:      est.rem,
+    dolly:         est.dolly,
+    remolque2:     est.rem2,
+    tipoCarga:     est.tipo    || 'SENCILLO',
+    cargaStatus:   est.carga,
+    sentido:       est.sentido || 'SUBIDA',
+    tieneGPS:      est.gps,
+    tieneCamara:   est.cam,
+    tieneCorte:    est.corte,
+    climaAut:      est.clima,
+    minutosClima:  climaMins,
+    bajaCobertura: false,
+    observaciones: est.obs,
+    tramo:         est.tramo,        // ← NUEVO
+    cliente:       est.cliente,      // ← NUEVO
+    destino:       est.destino,      // ← NUEVO
+    citaDescarga:  est.citaDescarga, // ← NUEVO
+  };
+
+  const sp = document.getElementById('sp-il-' + uid);
+  if (sp) sp.classList.remove('hidden');
+
+  google.script.run
+    .withSuccessHandler(res => {
+      if (sp) sp.classList.add('hidden');
+      if (res.ok) {
+        const msg = uid + ' guardado' +
+          (res.minSin !== null ? ' · ' + res.minSin + 'm previos' : '') +
+          (res.breach ? ' ⚠ SLA' : '');
+        toast(msg, res.breach ? 'warn' : 'ok');
+
+        // ── ACTUALIZACIÓN OPTIMISTA INMEDIATA ──────────────────
+        // Actualizamos APP.flota localmente para reflejar el barrido
+        // sin esperar la respuesta lenta del servidor
+        const ahora = new Date();
+        const idx   = APP.flota.findIndex(u => u.unidad === uid);
+        if (idx >= 0) {
+          APP.flota[idx]._cargaStatus  = datos.cargaStatus;
+          APP.flota[idx]._sentido      = datos.sentido;
+          APP.flota[idx]._remolque     = datos.remolque     || APP.flota[idx]._remolque;
+          APP.flota[idx]._dolly        = datos.dolly        || APP.flota[idx]._dolly;
+          APP.flota[idx]._remolque2    = datos.remolque2    || APP.flota[idx]._remolque2;
+          APP.flota[idx]._tipoCarga    = datos.tipoCarga;
+          APP.flota[idx]._tieneGPS     = datos.tieneGPS    ? 'SI' : 'NO';
+          APP.flota[idx]._tieneCamara  = datos.tieneCamara ? 'SI' : 'NO';
+          APP.flota[idx]._tieneCorte   = datos.tieneCorte  ? 'SI' : 'NO';
+          APP.flota[idx]._ultimaHora   = ahora.toISOString();
+          APP.flota[idx]._minSin       = res.minSin !== null ? 0 : 0; // recién barrado = 0 min
+          APP.flota[idx]._tramo        = datos.tramo;        // ← NUEVO
+          APP.flota[idx]._cliente      = datos.cliente;      // ← NUEVO
+          APP.flota[idx]._destino      = datos.destino;      // ← NUEVO
+          APP.flota[idx]._citaDescarga = datos.citaDescarga; // ← NUEVO
+          APP.flota[idx]._alertaSLA    = false;  // ya tiene barrido, no hay alerta
+          APP.flota[idx]._estadoBarrido = 'OK';
+        }
+
+        // Actualizar KPIs localmente
+        _actualizarKPIsLocales();
+
+        // Cerrar panel y re-renderizar tabla con datos actualizados
+        delete APP.inlineState[uid];
+        cerrarInline(uid);   // renderFlota() se llama dentro
+
+        // Luego lanzar recarga real del servidor (en background)
+        setTimeout(cargarFlota, 1500);
+
+      } else toast('Error: ' + res.msg, 'err');
+    })
+    .withFailureHandler(e => {
+      if (sp) sp.classList.add('hidden');
+      toast(e.message, 'err');
+    })
+    .registrarBarrido(APP.token, datos);
+}
+// Recalcula y actualiza los KPIs del dashboard con los datos locales actuales
+function _actualizarKPIsLocales() {
+  const flota = APP.flota;
+  const r = {
+    total:      flota.length,
+    cargadas:   flota.filter(u => u._cargaStatus === 'CARGADA').length,
+    vacias:     flota.filter(u => u._cargaStatus === 'VACIA').length,
+    subida:     flota.filter(u => u._sentido === 'SUBIDA').length,
+    bajada:     flota.filter(u => u._sentido === 'BAJADA').length,
+    detenidas:  flota.filter(u => u._sentido === 'DETENIDO' || u._novedad).length,
+    sinBarrido: flota.filter(u => u._alertaSLA).length,
+    compartidas: flota.filter(u => u._origen === 'COMPARTIDA').length,
+  };
+  _setTxt('kpi-total', r.total);
+  _setTxt('kpi-carg',  r.cargadas);
+  _setTxt('kpi-vac',   r.vacias);
+  _setTxt('kpi-sub',   r.subida);
+  _setTxt('kpi-baj',   r.bajada);
+  _setTxt('kpi-det',   r.detenidas);
+  _setTxt('kpi-sin',   r.sinBarrido);
+  _setTxt('kpi-comp',  r.compartidas);
+  _setTxt('flotaCount', r.total + ' unidades');
+}
+function filtrarFlota(q) { renderFlota(); }
+
+function setFiltroSentido(val, el) {
+  APP.filtroSentido = val;
+  document.querySelectorAll('#filterSentido .fb').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderFlota();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MODAL INCIDENCIA
+// ══════════════════════════════════════════════════════════════════
+function abrirModalIncidencia(uid, remolque) {
+  APP.incUnidad   = uid;
+  APP.incRemolque = remolque;
+  document.getElementById('incUniTitulo').textContent = uid;
+  document.getElementById('incCoord').value = '';
+  document.getElementById('incDesc').value  = '';
+  document.getElementById('incTipo').selectedIndex = 0;
+  showModal('modalIncidencia');
+}
+
+function captureGPSModal() {
+  if (!navigator.geolocation) { toast('GPS no disponible', 'warn'); return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const lat = pos.coords.latitude.toFixed(6);
+      const lng = pos.coords.longitude.toFixed(6);
+      document.getElementById('incCoord').value = lat + ', ' + lng;
+      toast('GPS capturado', 'ok');
+    },
+    err => toast('Error GPS: ' + err.message, 'warn'),
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+}
+
+function enviarIncidencia() {
+  const tipo  = document.getElementById('incTipo').value;
+  const coord = document.getElementById('incCoord').value.trim();
+  const desc  = document.getElementById('incDesc').value.trim();
+
+  if (!tipo) { toast('Selecciona el tipo de incidencia', 'warn'); return; }
+
+  const sp = document.getElementById('spInc');
+  sp.classList.remove('hidden');
+
+  const datos = {
+    estacion:    APP.estacion,
+    unidad:      APP.incUnidad,
+    remolque:    APP.incRemolque || '',
+    tipo,
+    coordenadas: coord,
+    descripcion: desc,
+  };
+
+  google.script.run
+    .withSuccessHandler(res => {
+      sp.classList.add('hidden');
+      if (res.ok) {
+        toast('Incidencia registrada — ' + APP.incUnidad, 'ok');
+        hideModal('modalIncidencia');
+        APP.protoIncId = res.id;
+        verProtocolo(tipo, res.id);
+        cargarFlota();
+        cargarSLA();
+      } else toast('Error: ' + res.msg, 'err');
+    })
+    .withFailureHandler(e => { sp.classList.add('hidden'); toast(e.message, 'err'); })
+    .registrarIncidencia(APP.token, datos);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MODAL TRASPASO
+// ══════════════════════════════════════════════════════════════════
+function abrirModalTraspaso(uid) {
+  APP.trpUnidad = uid;
+  APP.trpTipo   = 'SENCILLO';
+  document.getElementById('trpUniTitulo').textContent = uid;
+  document.getElementById('trpObs').value = '';
+
+  const opts = APP.estaciones
+    .filter(e => e.circuito !== APP.estacion)
+    .map(e => '<option value="' + e.circuito + '">' + e.detalle + '</option>')
+    .join('');
+  document.getElementById('trpDestino').innerHTML = '<option value="">— seleccionar —</option>' + opts;
+
+  toggleTrpTipo('SENCILLO');
+  document.querySelectorAll('#togTrpTipo .tog').forEach(t => t.className = 'tog');
+  var togSenc = document.querySelector('#togTrpTipo .tog[data-val="SENCILLO"]');
+  if (togSenc) togSenc.classList.add('tog-active-blue');
+
+  const u = APP.flota.find(f => f.unidad === uid);
+  if (u && u._remolque) {
+    ['trpRemolque','trpRem1'].forEach(function(id) {
+      var sel = document.getElementById(id);
+      if (sel) sel.value = u._remolque;
+    });
+  }
+
+  showModal('modalTraspaso');
+}
+
+function toggleTrpTipo(tipo) {
+  APP.trpTipo = tipo;
+  document.getElementById('trpEquipoSencillo').classList.toggle('hidden', tipo !== 'SENCILLO');
+  document.getElementById('trpEquipoFull').classList.toggle('hidden', tipo !== 'FULL');
+}
+
+function confirmarTraspaso() {
+  const destino = document.getElementById('trpDestino').value;
+  if (!destino) { toast('Selecciona la estación destino', 'warn'); return; }
+
+  const sp = document.getElementById('spTrp');
+  sp.classList.remove('hidden');
+
+  const datos = {
+    unidad:          APP.trpUnidad,
+    estacionOrigen:  APP.estacion,
+    estacionDestino: destino,
+    tipoCarga:       APP.trpTipo,
+    remolque:        APP.trpTipo === 'FULL'
+      ? document.getElementById('trpRem1').value
+      : document.getElementById('trpRemolque').value,
+    dolly:     APP.trpTipo === 'FULL' ? document.getElementById('trpDolly').value : '',
+    remolque2: APP.trpTipo === 'FULL' ? document.getElementById('trpRem2').value  : '',
+    observaciones: document.getElementById('trpObs').value,
+  };
+
+  google.script.run
+    .withSuccessHandler(res => {
+      sp.classList.add('hidden');
+      if (res.ok) {
+        toast(res.msg, 'ok');
+        hideModal('modalTraspaso');
+
+        // ── Quitar la unidad de APP.flota inmediatamente ──────────
+        APP.flota = APP.flota.filter(u => u.unidad !== APP.trpUnidad);
+        delete APP.inlineState[APP.trpUnidad];
+        APP.filaAbierta = null;
+
+        // Actualizar KPIs y tabla al instante
+        _actualizarKPIsLocales();
+        renderFlota();
+
+        // Actualizar badge de traspasos
+        APP.enTransito.push({ unidad: APP.trpUnidad, idTraspaso: res.id, estDestino: destino });
+        setBadge('nb-traspasos', APP.enTransito.length);
+        renderDashTransito();
+
+        // Sincronizar con servidor en background
+        setTimeout(cargarFlota, 2000);
+
+      } else toast('Error: ' + res.msg, 'err');
+    })
+    .withFailureHandler(e => { sp.classList.add('hidden'); toast(e.message,'err'); })
+    .registrarTraspaso(APP.token, datos);
+}
+
+function registrarRetorno(idTraspaso) {
+  if (!confirm('¿Confirmar retorno de esta unidad a su circuito de origen?')) return;
+  google.script.run
+    .withSuccessHandler(res => {
+      if (res.ok) {
+        toast(res.msg, 'ok');
+        APP.enTransito = APP.enTransito.filter(t => t.idTraspaso !== idTraspaso);
+        APP.filaAbierta = null;
+        APP.inlineState = {};
+        setBadge('nb-traspasos', APP.enTransito.length);
+        renderDashTransito();
+        cargarFlota();
+        cargarTraspasos();
+      } else toast('Error: ' + res.msg, 'err');
+    })
+    .withFailureHandler(e => toast(e.message,'err'))
+    .registrarRetorno(APP.token, idTraspaso);
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+//  TRASPASOS — vista completa
+// ══════════════════════════════════════════════════════════════════
+function cargarTraspasos() {
+  const body = document.getElementById('traspasosBody');
+  body.innerHTML = '<tr><td colspan="8"><div class="tbl-loading"><div class="spin dark"></div></div></td></tr>';
+  google.script.run
+    .withSuccessHandler(res => {
+      const data = res.data || [];
+      setBadge('nb-traspasos', data.filter(t => t.ESTADO === 'ACTIVO').length);
+      if (!data.length) {
+        body.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div>Sin traspasos hoy</div></div></td></tr>';
+        return;
+      }
+      body.innerHTML = data.map(t => '<tr>' +
+        '<td class="td-uni">' + t.UNIDAD + '</td>' +
+        '<td style="font-size:11px">' + (t.EST_ORIGEN || '—') + '</td>' +
+        '<td style="font-size:11px">' + (t.EST_DESTINO || '—') + '</td>' +
+        '<td class="td-mono" style="font-size:11px">' +
+          (t.TIPO_CARGA === 'FULL'
+            ? 'Full: ' + t.REMOLQUE + '+' + t.DOLLY + '+' + t.REMOLQUE2
+            : t.TIPO_CARGA === 'SIN_EQUIPO' ? 'Sin equipo'
+            : (t.REMOLQUE || '—')) +
+        '</td>' +
+        '<td class="td-mono" style="font-size:11px">' + fmtFecha(t.FECHA_INICIO) + '</td>' +
+        '<td style="font-size:11px">' + (t.MONITORISTA || '—') + '</td>' +
+        '<td><span class="badge ' + (t.ESTADO==='ACTIVO'?'bg-blue':'bg-gray') + '">' + (t.ESTADO || '—') + '</span></td>' +
+        '<td>' +
+          (t.ESTADO === 'ACTIVO'
+            ? '<button class="btn-barr" onclick="registrarRetorno(\'' + t.ID_TRP + '\')">↩ Retorno</button>'
+            : '<span style="font-size:10px;color:var(--txt3)">' + fmtHora(t.FECHA_RETORNO) + '</span>') +
+        '</td>' +
+      '</tr>').join('');
+    })
+    .withFailureHandler(e => toast(e.message,'err'))
+    .obtenerTraspasos(APP.token, APP.estacion);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  PANELES LATERALES DASHBOARD
+// ══════════════════════════════════════════════════════════════════
+function renderDashSLA() {
+  const cont = document.getElementById('dashSLA');
+  if (!APP.slaItems.length) {
+    cont.innerHTML = '<div class="empty-sm">Sin tareas pendientes ✓</div>';
+    return;
+  }
+  cont.innerHTML = APP.slaItems.slice(0,5).map(t => {
+    const cls  = t._enBreach ? 'sla-breach' : t._slaRestante < 5 ? 'sla-warn' : 'sla-ok';
+    const mins = Math.abs(t._slaRestante);
+    return '<div class="sla-mini' + (t._enBreach?' breach':'') + '">' +
+      '<div class="sm-timer ' + cls + '">' + (t._enBreach?'-':'') + mins + 'm</div>' +
+      '<div class="sm-body">' +
+        '<div class="sm-tipo">' + (t.TIPO || '').replace(/_/g,' ') + '</div>' +
+        '<div class="sm-ref">' + (t.UNIDAD||'') + ' · ' + (t.ESTACION||'') + '</div>' +
+      '</div></div>';
+  }).join('');
+}
+
+function renderDashNov(novedades) {
+  const cont = document.getElementById('dashNov');
+  const ico  = { ACCIDENTE:'💥',FALLA_MECANICA:'🔧',INFRACCION:'📋',
+                 DETENIDO_AUTORIDAD:'🚔',CORTE_MOTOR:'⚡',
+                 INFRACCION_DADIVA:'🔶' };
+  if (!novedades.length) {
+    cont.innerHTML = '<div class="empty-sm">Sin novedades activas ✓</div>';
+    return;
+  }
+  cont.innerHTML = novedades.slice(0,4).map(n =>
+    '<div class="nov-mini">' +
+      '<div class="nm-ico">' + (ico[n.TIPO] || '⚠') + '</div>' +
+      '<div class="nm-body">' +
+        '<div class="nm-title">' + n.UNIDAD + ' — ' + (n.TIPO||'').replace(/_/g,' ') + '</div>' +
+        '<div class="nm-meta">' + fmtHora(n.FECHA_HORA) + ' · ' + (n.MONITORISTA||'') + '</div>' +
+      '</div></div>'
+  ).join('');
+}
+
+function renderDashTimers() {
+  const cont = document.getElementById('dashTimers');
+  if (!APP.climaTimers.length) {
+    cont.innerHTML = '<div class="empty-sm">Sin timers activos</div>';
+    return;
+  }
+  cont.innerHTML = APP.climaTimers.map(t => {
+    const m   = String(Math.floor(t.restSeg/60)).padStart(2,'0');
+    const s   = String(t.restSeg%60).padStart(2,'0');
+    const cls = t.alerta ? 'tm-venc' : t.restSeg < 600 ? 'tm-warn' : 'tm-ok';
+    return '<div class="timer-mini">' +
+      '<div class="tm-uni">❄ ' + t.unidad + '</div>' +
+      '<button class="btn-sm-success" onclick="confirmarCorteClima(\'' + t.id + '\',\'' + t.unidad + '\')">Corte ✓</button>' +
+      '<div class="tm-time ' + cls + '">' + (t.alerta ? 'VENCIÓ' : m + ':' + s) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderDashTransito() {
+  const cont = document.getElementById('dashTransito');
+  if (!APP.enTransito.length) {
+    cont.innerHTML = '<div class="empty-sm">Sin unidades en tránsito</div>';
+    return;
+  }
+  cont.innerHTML = APP.enTransito.map(t =>
+    '<div class="nov-mini">' +
+      '<div class="nm-ico">⇄</div>' +
+      '<div class="nm-body">' +
+        '<div class="nm-title">' + t.unidad + '</div>' +
+        '<div class="nm-meta">→ ' + t.estDestino + '</div>' +
+      '</div>' +
+      '<button class="btn-sm-success" style="font-size:10px" onclick="registrarRetorno(\'' + t.idTraspaso + '\')">Retorno</button>' +
+    '</div>'
+  ).join('');
+}
+
+function actualizarTicker(res) {
+  const el  = document.getElementById('ticker');
+  const txt = document.getElementById('tickerTxt');
+  if (res.tareasCriticas > 0) {
+    el.className = 'ticker alert';
+    txt.textContent = res.tareasCriticas + ' tarea(s) SLA VENCIDAS';
+  } else if (APP.slaItems.length > 0) {
+    el.className = 'ticker warn';
+    txt.textContent = APP.slaItems.length + ' tarea(s) SLA pendientes';
+  } else if (res.timersVencidos > 0) {
+    el.className = 'ticker alert';
+    txt.textContent = res.timersVencidos + ' timer(s) clima VENCIDO';
+  } else {
+    el.className = 'ticker';
+    txt.textContent = 'En línea · ' + (res.resumen && res.resumen.total ? res.resumen.total : 0) + ' unidades activas';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  PROTOCOLOS
+// ══════════════════════════════════════════════════════════════════
+function verProtocolo(tipo, incId) {
+  APP.protoIncId = incId;
+  document.getElementById('protoTitle').textContent = (tipo || '').replace(/_/g,' ');
+  document.getElementById('protoPasos').innerHTML =
+    '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  showModal('modalProtocolo');
+
+    clearInterval(APP.protoSLAivl);
+
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res.ok) {
+        document.getElementById('protoPasos').innerHTML =
+          '<div class="empty-state"><div>' + (res.msg || '') + '</div></div>';
+        return;
+      }
+      document.getElementById('protoPasos').innerHTML = res.pasos.map(p =>
+        '<div class="proto-paso">' +
+          '<div class="pp-num">' + p.orden + '</div>' +
+          '<div><div class="pp-tit">' + p.titulo + '</div>' +
+          '<div class="pp-det">' + p.detalle + '</div></div>' +
+        '</div>'
+      ).join('');
+    })
+    .withFailureHandler(e => {
+      document.getElementById('protoPasos').innerHTML =
+        '<div class="empty-state"><div>' + e.message + '</div></div>';
+    })
+    .obtenerProtocolo(APP.token, tipo);
+}
+
+function marcarCorreoEnviado() {
+  clearInterval(APP.protoSLAivl);
+  hideModal('modalProtocolo');
+  cargarSLA();
+  cargarFlota();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  TAREAS SLA
+// ══════════════════════════════════════════════════════════════════
+function cargarSLA() {
+  const cont = document.getElementById('slaList');
+  cont.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  google.script.run
+    .withSuccessHandler(res => {
+      APP.slaItems = res.data || [];
+      setBadge('nb-sla', APP.slaItems.length);
+      renderSLAList(cont, APP.slaItems);
+    })
+    .withFailureHandler(e => {
+      cont.innerHTML = '<div class="empty-state"><div>' + e.message + '</div></div>';
+    })
+    .obtenerTareasSLA(APP.token, APP.estacion);
+}
+
+function renderSLAList(cont, items) {
+  if (!items.length) {
+    cont.innerHTML = '<div class="empty-state"><div>Sin tareas pendientes ✓</div></div>';
+    return;
+  }
+  cont.innerHTML = '<div class="panel">' + items.map(t => {
+    const cls  = t._enBreach ? 'breach' : t._slaRestante < 5 ? 'warn' : 'ok';
+    const mins = Math.abs(t._slaRestante);
+    return '<div class="sla-item' + (t._enBreach?' breach':'') + '">' +
+      '<div class="si-timer ' + cls + '">' + (t._enBreach?'-':'') + mins + 'm</div>' +
+      '<div class="si-body">' +
+        '<div class="si-tipo">' + (t.TIPO||'').replace(/_/g,' ') + '</div>' +
+        '<div class="si-meta">' + (t.UNIDAD||'') + ' · ' + (t.ESTACION||'') + ' · ' + (t.MONITORISTA||'') + '</div>' +
+      '</div>' +
+      '<button class="btn-sm-success" onclick="cerrarSLA(\'' + t.ID_SLA + '\')">Cerrar ✓</button>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function tickSLA() {
+  const ahora = new Date();
+  APP.slaItems = APP.slaItems.map(t => {
+    const ini = new Date(t.INICIO);
+    t._minTranscurridos = Math.round((ahora - ini) / 60000);
+    t._slaRestante      = (t.SLA_MIN || 30) - t._minTranscurridos;
+    t._enBreach         = t._slaRestante < 0;
+    return t;
+  });
+  renderDashSLA();
+  const cont = document.getElementById('slaList');
+  if (cont && !cont.querySelector('.tbl-loading')) renderSLAList(cont, APP.slaItems);
+}
+
+function cerrarSLA(id) {
+  const nota = prompt('Nota de cierre (opcional):') || '';
+  google.script.run
+    .withSuccessHandler(r => { if (r.ok) { toast('Tarea cerrada ✓','ok'); cargarSLA(); } })
+    .cerrarTareaSLA(APP.token, id, nota);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  NOVEDADES
+// ══════════════════════════════════════════════════════════════════
+function cargarNovedades() {
+  const cont  = document.getElementById('novList');
+  cont.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  var novDes = document.getElementById('novDesde');
+  var novHas = document.getElementById('novHasta');
+  const desde = novDes ? (novDes.value || null) : null;
+  const hasta = novHas ? (novHas.value || null) : null;
+
+  google.script.run
+    .withSuccessHandler(res => {
+      setBadge('nb-novedades', res.data ? res.data.length : 0);
+      if (!res.data || !res.data.length) {
+        cont.innerHTML = '<div class="empty-state"><div>Sin novedades en el período ✓</div></div>';
+        return;
+      }
+      const ico = { ACCIDENTE:'💥',FALLA_MECANICA:'🔧',INFRACCION:'📋',
+                    DETENIDO_AUTORIDAD:'🚔',CORTE_MOTOR:'⚡',
+                    PESOS_DIMENSIONES:'⚖',INFRACCION_DADIVA:'🔶' };
+      const cls = { ACCIDENTE:'acc',FALLA_MECANICA:'fall',INFRACCION:'inf',INFRACCION_DADIVA:'inf' };
+      const mapsLink = function(lat, lng) {
+        return (lat && lng)
+          ? '<a href="https://maps.google.com/?q=' + lat + ',' + lng + '" target="_blank" style="font-size:10px;color:var(--blue)">📍 Ver en Maps</a>'
+          : '';
+      };
+
+      cont.innerHTML = '<div class="panel">' + res.data.map(n =>
+        '<div class="nov-item ' + (cls[n.TIPO] || 'oth') + '">' +
+          '<div class="ni-ico">' + (ico[n.TIPO] || '⚠') + '</div>' +
+          '<div class="ni-body">' +
+            '<div class="ni-title">' + n.UNIDAD + ' — ' + (n.TIPO||'').replace(/_/g,' ') + '</div>' +
+            '<div class="ni-meta">' + (n.ESTACION||'') + ' · ' + fmtHora(n.FECHA_HORA) + ' · ' + (n.MONITORISTA||'') + '</div>' +
+            (n.DESCRIPCION ? '<div class="ni-meta" style="margin-top:2px">' + n.DESCRIPCION + '</div>' : '') +
+            mapsLink(n.LAT, n.LNG) +
+            '<div class="ni-proto" onclick="verProtocolo(\'' + n.TIPO + '\',\'' + n.ID_INC + '\')">Ver protocolo →</div>' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">' +
+            '<span class="badge ' + (n.ESTADO_INC==='CERRADA'?'bg-gray':'bg-red') + '">' + (n.ESTADO_INC||'') + '</span>' +
+            (n.ESTADO_INC !== 'CERRADA'
+              ? '<button class="btn-sm-success" onclick="cerrarNovedad(\'' + n.ID_INC + '\')">Cerrar</button>'
+              : '') +
+          '</div>' +
+        '</div>'
+      ).join('') + '</div>';
+    })
+    .withFailureHandler(e => {
+      cont.innerHTML = '<div class="empty-state"><div>' + e.message + '</div></div>';
+    })
+    .obtenerNovedades(APP.token, APP.estacion, desde, hasta);
+}
+
+function cerrarNovedad(id) {
+  const res = prompt('Resolución de la novedad:');
+  if (res === null) return;
+  google.script.run
+    .withSuccessHandler(r => {
+      if (r.ok) { toast('Novedad cerrada ✓','ok'); cargarNovedades(); cargarFlota(); }
+    })
+    .cerrarNovedad(APP.token, id, res);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  TIMERS CLIMA
+// ══════════════════════════════════════════════════════════════════
+function tickClima() {
+  APP.climaTimers = APP.climaTimers.map(t => {
+    if (t.restSeg > 0) t.restSeg--;
+    else t.alerta = true;
+    return t;
+  });
+  const chips = document.getElementById('climaChips');
+  chips.innerHTML = APP.climaTimers.map(t => {
+    const m = String(Math.floor(t.restSeg/60)).padStart(2,'0');
+    const s = String(t.restSeg%60).padStart(2,'0');
+    return '<div class="clima-chip' + (t.alerta?' vencido':'') + '"' +
+           ' onclick="confirmarCorteClima(\'' + t.id + '\',\'' + t.unidad + '\')">' +
+           '❄ ' + t.unidad + ' ' + (t.alerta ? 'VENCIÓ' : m + ':' + s) +
+           '</div>';
+  }).join('');
+  renderDashTimers();
+}
+
+function confirmarCorteClima(id, unidad) {
+  if (!confirm('¿Confirmar corte de motor para ' + unidad + '?')) return;
+  google.script.run
+    .withSuccessHandler(res => {
+      if (res.ok) {
+        toast('Corte ejecutado — ' + unidad, 'ok');
+        APP.climaTimers = APP.climaTimers.filter(t => t.id !== id);
+        renderDashTimers(); tickClima();
+      }
+    })
+    .cerrarTimerClima(APP.token, id, true);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  ENGANCHE D&D
+// ══════════════════════════════════════════════════════════════════
+function cargarEnganchePool() {
+  const uPool = document.getElementById('engUniPool');
+  const ePool = document.getElementById('engEquiPool');
+  uPool.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  ePool.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+
+  document.getElementById('engUniCount').textContent = APP.flota.length;
+  uPool.innerHTML = APP.flota.map(u => {
+    const sc = { SUBIDA:'u-sub',BAJADA:'u-baj',DETENIDO:'u-det' }[u._sentido] || '';
+    return '<div class="eng-item eng-uni ' + sc + '" draggable="true"' +
+           ' data-uni="' + u.unidad + '" data-rem="' + (u._remolque||'') + '"' +
+           ' ondragstart="onDragStart(event,\'' + u.unidad + '\')">' +
+      '<div class="ei-top">' +
+        '<span class="ei-id">' + u.unidad + '</span>' +
+        '<span class="badge ' + (u._remolque?'bg-yellow':'bg-gray') + '">' + (u._remolque||'sin caja') + '</span>' +
+      '</div>' +
+      '<div class="ei-meta">' + (u.estacion||'') + '</div>' +
+    '</div>';
+  }).join('') || '<div class="empty-sm">Sin unidades</div>';
+
+  const equipos = [
+    ...APP.remolques.map(r => ({ id:r.id, tipo:'REMOLQUE' })),
+    ...APP.dollys.map(d    => ({ id:d.id, tipo:'DOLLY' })),
+  ];
+  document.getElementById('engEquiCount').textContent = equipos.length;
+  ePool.innerHTML = equipos.map(eq =>
+    '<div class="eng-item eng-equi" draggable="true"' +
+    ' data-equi="' + eq.id + '" data-tipo="' + eq.tipo + '"' +
+    ' ondragstart="onDragStartEqui(event)"' +
+    ' ondragover="onDragOverEqui(event)"' +
+    ' ondragleave="onDragLeaveEqui(event)"' +
+    ' ondrop="onDropEqui(event,\'' + eq.id + '\',\'' + eq.tipo + '\')">' +
+      '<div class="ei-top">' +
+        '<span class="ei-id">' + eq.id + '</span>' +
+        '<span class="badge bg-gray">' + eq.tipo + '</span>' +
+      '</div>' +
+    '</div>'
+  ).join('') || '<div class="empty-sm">Sin equipos</div>';
+
+  const dz = document.getElementById('engDropzone');
+  dz.ondragover  = e => { e.preventDefault(); dz.classList.add('over'); };
+  dz.ondragleave = () => dz.classList.remove('over');
+  dz.ondrop      = e => { e.preventDefault(); dz.classList.remove('over');
+    toast('Suelta la unidad sobre un equipo en la lista derecha','info'); };
+}
+
+function onDragStart(e, uid) {
+  APP.dragUni = uid;
+  e.currentTarget.classList.add('dragging');
+  setTimeout(() => e.currentTarget.classList.remove('dragging'), 0);
+}
+function onDragStartEqui(e) { e.dataTransfer.effectAllowed = 'move'; }
+function onDragOverEqui(e)  {
+  if (!APP.dragUni) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drop-target');
+}
+function onDragLeaveEqui(e) { e.currentTarget.classList.remove('drop-target'); }
+function onDropEqui(e, equiId, equiTipo) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drop-target');
+  if (!APP.dragUni) { toast('Arrastra una unidad primero','warn'); return; }
+  const uni = APP.flota.find(u => u.unidad === APP.dragUni);
+  APP.pendingEng = {
+    unidad: APP.dragUni,
+    remolqueAnterior: uni ? (uni._remolque || '') : '',
+    remolqueNuevo:    equiTipo === 'REMOLQUE' ? equiId : '',
+    dollyNuevo:       equiTipo === 'DOLLY'    ? equiId : '',
+    equiId, equiTipo,
+  };
+  APP.dragUni = null;
+  document.getElementById('ecUni').textContent  = APP.pendingEng.unidad;
+  document.getElementById('ecEqui').textContent = equiId;
+  showModal('modalEnganche');
+}
+
+function confirmarEnganche() {
+  if (!APP.pendingEng) return;
+  const sp = document.getElementById('spEnganche');
+  sp.classList.remove('hidden');
+  const datos = {
+    tipo:'ENGANCHE', estacion:APP.estacion,
+    unidad:           APP.pendingEng.unidad,
+    remolqueAnterior: APP.pendingEng.remolqueAnterior,
+    remolqueNuevo:    APP.pendingEng.remolqueNuevo,
+    dollyNuevo:       APP.pendingEng.dollyNuevo,
+    ubicacion:        document.getElementById('ec-ubic').value,
+    motivo:           document.getElementById('ec-motivo').value,
+  };
+  google.script.run
+    .withSuccessHandler(res => {
+      sp.classList.add('hidden');
+      if (res.ok) {
+        toast(res.msg,'ok'); hideModal('modalEnganche');
+        APP.pendingEng = null;
+        cargarEnganchePool(); cargarMovimientos(); cargarFlota();
+      } else toast('Error: ' + res.msg,'err');
+    })
+    .withFailureHandler(e => { sp.classList.add('hidden'); toast(e.message,'err'); })
+    .registrarEnganche(APP.token, datos);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  HISTORIAL
+// ══════════════════════════════════════════════════════════════════
+function cargarHistorial() {
+  const body  = document.getElementById('histBody');
+  body.innerHTML = '<tr><td colspan="12"><div class="tbl-loading"><div class="spin dark"></div></div></td></tr>';
+  var filtroUEl = document.getElementById('histFiltroUnidad');
+  var histDesEl = document.getElementById('histDesde');
+  var histHasEl = document.getElementById('histHasta');
+  const filtroU = filtroUEl ? filtroUEl.value : '';
+  const desde   = histDesEl ? (histDesEl.value || null) : null;
+  const hasta   = histHasEl ? (histHasEl.value || null) : null;
+
+  google.script.run
+    .withSuccessHandler(res => {
+      const rows = (res.data || []).filter(r => !filtroU || r.UNIDAD === filtroU);
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="12"><div class="empty-state"><div>Sin barridos</div></div></td></tr>';
+        return;
+      }
+      const si = function(v) {
+        return '<span class="sys-ic ' + (v==='SI'?'si-ok':'si-no') + '">' + (v==='SI'?'✓':'✗') + '</span>';
+      };
+      const cB = { CARGADA:'bg-green',VACIA:'bg-gray',EMBALAJE:'bg-yellow',DESCARGANDO:'bg-blue' };
+      const sB = { SUBIDA:'<span class="badge bg-teal">↑</span>',
+                   BAJADA:'<span class="badge bg-blue">↓</span>',
+                   DETENIDO:'<span class="badge bg-red">⊗</span>' };
+      body.innerHTML = rows.map(b => {
+        const min = Number(b.MIN_SIN_BARRIDO) || 0;
+        const mc  = min > 60 ? 'sla-breach' : min > 30 ? 'sla-warn' : 'sla-ok';
+        return '<tr>' +
+          '<td class="td-mono" style="font-size:11px">' + fmtHora(b.FECHA_HORA) + '</td>' +
+          '<td class="td-uni">' + b.UNIDAD + '</td>' +
+          '<td class="td-mono td-muted">' + (b.REMOLQUE||'—') + '</td>' +
+          '<td class="td-mono td-muted">' + (b.DOLLY||'—') + '</td>' +
+          '<td>' + (sB[b.SENTIDO] || '—') + '</td>' +
+          '<td><span class="badge ' + (cB[b.CARGA_STATUS]||'bg-gray') + '" style="font-size:9px">' +
+            (b.CARGA_STATUS||'—').substring(0,4) + '</span></td>' +
+          '<td>' + si(b.TIENE_GPS) + '</td>' +
+          '<td>' + si(b.TIENE_CAMARA) + '</td>' +
+          '<td>' + si(b.TIENE_CORTE) + '</td>' +
+          '<td><span class="' + mc + '">' + (min ? min+'m' : '—') + '</span></td>' +
+          '<td><span class="badge ' + (b.SLA_STATUS==='BREACH'?'bg-red':'bg-green') + '" style="font-size:9px">' +
+            (b.SLA_STATUS||'OK') + '</span></td>' +
+          '<td style="font-size:10px;color:var(--txt3)">' + (b.INCIDENCIAS||'') + '</td>' +
+        '</tr>';
+      }).join('');
+    })
+    .withFailureHandler(e => toast(e.message,'err'))
+    .obtenerHistorialBarridos(APP.token, APP.estacion, desde, hasta);
+}
+
+function poblarFiltroUnidad() {
+  const sel = document.getElementById('histFiltroUnidad');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Todas las unidades</option>' +
+    APP.flota.map(u => '<option value="' + u.unidad + '">' + u.unidad + '</option>').join('');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MOVIMIENTOS
+// ══════════════════════════════════════════════════════════════════
+function cargarSelMovimientos() {
+  const optsU = '<option value="">— seleccionar —</option>' +
+    APP.flota.map(u => '<option value="' + u.unidad + '">' + u.unidad + ' (' + (u._remolque||'sin caja') + ')</option>').join('');
+  document.getElementById('mv-unidad').innerHTML = optsU;
+
+  const optsR = '<option value="">— ninguno —</option>' +
+    APP.remolques.map(r => '<option value="' + r.id + '">' + r.id + '</option>').join('');
+  ['mv-rem-ant','mv-rem-nvo'].forEach(id => {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = optsR;
+  });
+
+  const optsD = '<option value="">— ninguno —</option>' +
+    APP.dollys.map(d => '<option value="' + d.id + '">' + d.id + '</option>').join('');
+  ['mv-dol-ant','mv-dol-nvo'].forEach(id => {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = optsD;
+  });
+}
+
+function onMvUnidadChange() {
+  const id  = document.getElementById('mv-unidad').value;
+  const uni = APP.flota.find(u => u.unidad === id);
+  if (uni && uni._remolque) {
+    var remAnt = document.getElementById('mv-rem-ant');
+    if (remAnt) remAnt.value = uni._remolque;
+  }
+  if (uni && uni._dolly) {
+    var dolAnt = document.getElementById('mv-dol-ant');
+    if (dolAnt) dolAnt.value = uni._dolly;
+  }
+}
+
+function guardarMovimiento() {
+  const unidad = document.getElementById('mv-unidad').value;
+  if (!unidad) { toast('Selecciona una unidad','warn'); return; }
+  const tipoTog = document.querySelector('#togMovTipo .tog[class*="tog-active"]');
+  const sp = document.getElementById('spMov');
+  sp.classList.remove('hidden');
+  google.script.run
+    .withSuccessHandler(res => {
+      sp.classList.add('hidden');
+      if (res.ok) { toast(res.msg,'ok'); cargarMovimientos(); cargarFlota(); }
+      else toast('Error: ' + res.msg,'err');
+    })
+    .withFailureHandler(e => { sp.classList.add('hidden'); toast(e.message,'err'); })
+    .registrarEnganche(APP.token, {
+      tipo:             tipoTog ? tipoTog.dataset.val : 'ENGANCHE',
+      estacion:         APP.estacion, unidad,
+      remolqueAnterior: document.getElementById('mv-rem-ant').value,
+      remolqueNuevo:    document.getElementById('mv-rem-nvo').value,
+      dollyAnterior:    document.getElementById('mv-dol-ant').value,
+      dollyNuevo:       document.getElementById('mv-dol-nvo').value,
+      ubicacion:        document.getElementById('mv-ubic').value,
+      motivo:           document.getElementById('mv-motivo').value,
+      notas:            document.getElementById('mv-notas').value,
+    });
+}
+
+function cargarMovimientos() {
+  const cont = document.getElementById('movLog') || document.getElementById('engLog');
+  if (!cont) return;
+  cont.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res.data || !res.data.length) { cont.innerHTML = '<div class="empty-sm">Sin movimientos hoy</div>'; return; }
+      const icoM = { ENGANCHE:'tld-eng',CAMBIO_EQUIPO:'tld-cam',DEJA_EQUIPO:'tld-dej',RECOGE_EQUIPO:'tld-rec' };
+      const emoM = { ENGANCHE:'⬡',CAMBIO_EQUIPO:'⇄',DEJA_EQUIPO:'↓',RECOGE_EQUIPO:'↑' };
+      cont.innerHTML = res.data.map(m =>
+        '<div class="tl-item">' +
+          '<div class="tl-dot ' + (icoM[m.TIPO_MOV]||'tld-eng') + '">' + (emoM[m.TIPO_MOV]||'●') + '</div>' +
+          '<div class="tl-body">' +
+            '<div class="tl-title">' + m.UNIDAD + ' — ' + (m.TIPO_MOV||'').replace(/_/g,' ') + '</div>' +
+            '<div class="tl-meta">' +
+              (m.REM_ANTERIOR ? '<span style="color:var(--red)">↓ ' + m.REM_ANTERIOR + '</span> ' : '') +
+              (m.REM_NUEVO    ? '<span style="color:var(--green)">↑ ' + m.REM_NUEVO + '</span>' : '') +
+              (m.DOLLY_NVO    ? ' · D:' + m.DOLLY_NVO : '') +
+              (m.UBICACION    ? ' · ' + m.UBICACION : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="tl-time">' + fmtHora(m.FECHA_HORA) + '</div>' +
+        '</div>'
+      ).join('');
+    })
+    .withFailureHandler(() => {})
+    .obtenerMovimientos(APP.token, APP.estacion);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SUPERVISOR
+// ══════════════════════════════════════════════════════════════════
+function abrirNota(unidad) {
+  APP.notaUnidad = unidad;
+  document.getElementById('notaUnidadTitulo').textContent = unidad;
+  document.getElementById('notaTexto').value = '';
+  showModal('modalNota');
+}
+
+function guardarNota() {
+  const nota = document.getElementById('notaTexto').value.trim();
+  if (!nota) { toast('Escribe una nota','warn'); return; }
+  const sp = document.getElementById('spNota');
+  sp.classList.remove('hidden');
+  google.script.run
+    .withSuccessHandler(res => {
+      sp.classList.add('hidden');
+      if (res.ok) { toast('Nota guardada — ' + APP.notaUnidad,'ok'); hideModal('modalNota'); }
+      else toast('Error: ' + res.msg,'err');
+    })
+    .withFailureHandler(e => { sp.classList.add('hidden'); toast(e.message,'err'); })
+    .agregarNotaUnidad(APP.token, APP.notaUnidad, nota);
+}
+
+function cargarUnidadesSup() {
+  const body = document.getElementById('unidBody');
+  body.innerHTML = '<tr><td colspan="10"><div class="tbl-loading"><div class="spin dark"></div></div></td></tr>';
+  var selEstEl = document.getElementById('unidFiltroEst');
+  const filtroEst = selEstEl ? selEstEl.value : '';
+
+  if (selEstEl && APP.estaciones.length) {
+    selEstEl.innerHTML = '<option value="">Todas las estaciones</option>' +
+      APP.estaciones.map(e => '<option value="' + e.circuito + '">' + e.detalle + '</option>').join('');
+  }
+
+  google.script.run
+    .withSuccessHandler(res => {
+      const data = (res.data || []).filter(u => !filtroEst || u.ESTACION === filtroEst);
+      if (!data.length) {
+        body.innerHTML = '<tr><td colspan="10"><div class="empty-state"><div>Sin unidades</div></div></td></tr>';
+        return;
+      }
+      body.innerHTML = data.map(u => {
+        const flotaU = APP.flota.find(f => f.unidad === u.UNIDAD);
+        const min    = flotaU ? flotaU._minSin : null;
+        const mc     = min === null ? '' : min > 60 ? 'sla-breach' : min > 30 ? 'sla-warn' : 'sla-ok';
+        const esComp = u._origen === 'COMPARTIDA';
+        return '<tr>' +
+          '<td class="td-uni">' + u.UNIDAD + '</td>' +
+          '<td style="font-size:11px">' + (u.CIRCUITO||'—') + '</td>' +
+          '<td style="font-size:11px">' + (u.ESTACION||'—') + '</td>' +
+          '<td><span class="badge ' + ((u.ESTATUS||'').toLowerCase()==='activo'?'bg-green':'bg-gray') + '">' + (u.ESTATUS||'—') + '</span></td>' +
+          '<td style="font-size:11px;color:var(--txt3)">' + (u.FECHA ? fmtFecha(u.FECHA) : '—') + '</td>' +
+          '<td style="font-size:11px;color:var(--txt3)">' + (u['Quien Asigno']||'—') + '</td>' +
+          '<td class="td-mono" style="font-size:11px">' + (flotaU && flotaU._ultimaHora ? fmtHora(flotaU._ultimaHora) : '—') + '</td>' +
+          '<td><span class="' + mc + '">' + (min !== null ? min + 'm' : '—') + '</span></td>' +
+          '<td>' + (esComp ? '<span class="badge bg-purple">⇄ ' + u._estOrigen + '</span>' : '<span class="badge bg-gray">Propia</span>') + '</td>' +
+          '<td><button class="btn-barr" onclick="abrirNota(\'' + u.UNIDAD + '\')">📝 Nota</button></td>' +
+        '</tr>';
+      }).join('');
+    })
+    .withFailureHandler(e => toast(e.message,'err'))
+    .obtenerUnidadesAsignadas(APP.token, filtroEst);
+}
+
+function cargarReportes() {
+  const desde = document.getElementById('rpDesde').value;
+  const hasta = document.getElementById('rpHasta').value;
+  if (!desde || !hasta) { toast('Selecciona el rango de fechas','warn'); return; }
+  const cont = document.getElementById('reportesContent');
+  cont.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div>Generando…</div>';
+  let barridosData=[], novedadesData=[], pendientes=2;
+  const check = function() {
+    if (--pendientes > 0) return;
+    renderReportes(barridosData, novedadesData, desde, hasta);
+  };
+  google.script.run
+    .withSuccessHandler(r => { barridosData = r.data||[]; check(); })
+    .withFailureHandler(() => check())
+    .obtenerHistorialBarridos(APP.token, null, desde, hasta);
+  google.script.run
+    .withSuccessHandler(r => { novedadesData = r.data||[]; check(); })
+    .withFailureHandler(() => check())
+    .obtenerNovedades(APP.token, null, desde, hasta);
+}
+
+function renderReportes(barridos, novedades, desde, hasta) {
+  const cont  = document.getElementById('reportesContent');
+  const total = barridos.length;
+  const breach= barridos.filter(b => b.SLA_STATUS==='BREACH').length;
+  const prom  = total
+    ? Math.round(barridos.reduce((a,b) => a+(Number(b.MIN_SIN_BARRIDO)||0),0)/total) : 0;
+  const porMon = {};
+  barridos.forEach(b => {
+    const m = b.MONITORISTA || '—';
+    if (!porMon[m]) porMon[m] = { b:0, br:0 };
+    porMon[m].b++;
+    if (b.SLA_STATUS==='BREACH') porMon[m].br++;
+  });
+  cont.innerHTML =
+    '<div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">' +
+      '<div class="kpi-card kc-blue"><div class="kc-val">' + total + '</div><div class="kc-lbl">Barridos</div></div>' +
+      '<div class="kpi-card kc-red"><div class="kc-val">' + breach + '</div><div class="kc-lbl">SLA excedidos</div></div>' +
+      '<div class="kpi-card kc-yellow"><div class="kc-val">' + novedades.length + '</div><div class="kc-lbl">Novedades</div></div>' +
+      '<div class="kpi-card kc-green"><div class="kc-val">' + prom + 'm</div><div class="kc-lbl">Prom. intervalo</div></div>' +
+    '</div>' +
+    '<div class="panel mt12">' +
+      '<div class="panel-head">' +
+        '<div class="ph-title">Desempeño por monitorista</div>' +
+        '<div style="font-size:11px;color:var(--txt3)">' + desde + ' → ' + hasta + '</div>' +
+      '</div>' +
+      '<div class="tbl-wrap"><table class="data-tbl">' +
+        '<thead><tr><th>Monitorista</th><th>Barridos</th><th>SLA excedidos</th><th>Cumplimiento</th></tr></thead>' +
+        '<tbody>' +
+        Object.entries(porMon).map(function(entry) {
+          const m = entry[0], d = entry[1];
+          const pct = Math.round(((d.b - d.br) / d.b) * 100);
+          return '<tr>' +
+            '<td>' + m + '</td>' +
+            '<td class="td-mono">' + d.b + '</td>' +
+            '<td><span class="' + (d.br>0?'sla-breach':'') + '">' + d.br + '</span></td>' +
+            '<td><span class="badge ' + (pct>=90?'bg-green':pct>=70?'bg-yellow':'bg-red') + '">' + pct + '%</span></td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>' +
+    '</div>';
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  RELEVO
+// ══════════════════════════════════════════════════════════════════
+function abrirRelevo() {
+  showModal('modalRelevo');
+  const body = document.getElementById('relevoBody');
+  body.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div>Generando resumen…</div>';
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res.ok) { body.innerHTML = '<div class="empty-state"><div>' + (res.msg||'') + '</div></div>'; return; }
+      const r = res.resumen;
+      const slaColor = r.slaBreaches > 0 ? 'var(--red)' : 'var(--green)';
+      const novColor = r.novedadesAbiertas > 0 ? 'var(--red)' : 'var(--green)';
+      body.innerHTML =
+        '<div class="relevo-kpi">' +
+          '<div class="rk-card"><div class="rk-val">' + r.totalBarridos + '</div><div class="rk-lbl">Barridos</div></div>' +
+          '<div class="rk-card"><div class="rk-val" style="color:' + slaColor + '">' + r.slaBreaches + '</div><div class="rk-lbl">SLA excedidos</div></div>' +
+          '<div class="rk-card"><div class="rk-val">' + r.promedioReaccion + 'm</div><div class="rk-lbl">Prom. intervalo</div></div>' +
+          '<div class="rk-card"><div class="rk-val" style="color:' + novColor + '">' + r.novedadesAbiertas + '</div><div class="rk-lbl">Novedades abiertas</div></div>' +
+        '</div>' +
+        (r.unidadesEnRiesgo && r.unidadesEnRiesgo.length ? (
+          '<div style="padding:0 14px 4px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3);font-family:var(--mono)">Requieren atención del entrante</div>' +
+          '<div class="riesgo-list">' +
+          r.unidadesEnRiesgo.map(u =>
+            '<div class="rl-item">' +
+              '<div class="rl-dot"></div>' +
+              '<div style="flex:1">' +
+                '<strong>' + u.unidad + '</strong>' + (u.remolque ? ' (' + u.remolque + ')' : '') + ' — ' +
+                (u.motivo||'').replace(/_/g,' ') +
+                (u.minSin ? ' · ' + u.minSin + 'm sin barrido' : '') +
+                (u.obs ? '<div style="font-size:10px;color:var(--txt3);margin-top:3px">📝 ' + u.obs + '</div>' : '') +
+              '</div>' +
+            '</div>'
+          ).join('') +
+          '</div>'
+        ) : '<div class="empty-sm" style="color:var(--green)">✓ Todas las unidades en orden</div>');
+    })
+    .withFailureHandler(e => {
+      body.innerHTML = '<div class="empty-state"><div>' + e.message + '</div></div>';
+    })
+    .generarResumenTurno(APP.token);
+}
+
+function confirmarRelevo() {
+  if (!confirm('¿Confirmar cierre de turno? Tu sesión se cerrará.')) return;
+  doLogout();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  MODALES
+// ══════════════════════════════════════════════════════════════════
+function showModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function hideModal(id) {
+  document.getElementById(id).classList.add('hidden');
+  if (id === 'modalProtocolo') clearInterval(APP.protoSLAivl);
+}
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('modal-bg')) hideModal(e.target.id);
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  POLLING / BADGES / TOAST / UTILS
+// ══════════════════════════════════════════════════════════════════
+function setPoll(s) {
+  document.getElementById('pollDot').classList.toggle('syncing', s);
+  document.getElementById('pollLbl').textContent = s
+    ? 'Sincronizando…'
+    : 'Sync: ' + new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+}
+
+function setBadge(id, count) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = count;
+  el.classList.toggle('hidden', count === 0);
+}
+
+function toast(msg, tipo) {
+  tipo = tipo || 'info';
+  const cont = document.getElementById('toastCont');
+  const el   = document.createElement('div');
+  const cls  = { ok:'t-ok',err:'t-err',warn:'t-warn',info:'t-info' }[tipo] || 't-info';
+  const ico  = { ok:'✓',err:'✗',warn:'⚠',info:'ℹ' }[tipo] || 'ℹ';
+  el.className = 'toast ' + cls;
+  el.innerHTML = '<span style="font-weight:700;flex-shrink:0">' + ico + '</span><span>' + msg + '</span>';
+  cont.appendChild(el);
+  setTimeout(function() {
+    el.style.opacity   = '0';
+    el.style.transform = 'translateX(100%)';
+    setTimeout(function() { el.remove(); }, 280);
+  }, 4500);
+}
+
+function fmtHora(v) {
+  if (!v) return '—';
+  const d = v instanceof Date ? v : new Date(v);
+  return isNaN(d) ? '—' : d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+}
+
+function fmtFecha(v) {
+  if (!v) return '—';
+  const d = v instanceof Date ? v : new Date(v);
+  return isNaN(d) ? '—' : d.toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+}
+
+function _setTxt(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function _poblarSelectEquipo(id, items) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— ninguno —</option>' +
+    items.map(i => '<option value="' + i.id + '">' + i.id + '</option>').join('');
+}
+
+function setTog(groupId, el, color) {
+  var group = document.getElementById(groupId);
+  if (!group) return;
+  group.querySelectorAll('.tog').forEach(t => t.className = 'tog');
+  el.classList.add('tog-active-' + color);
+}
+function togglePanelAlertas() {
+  const panel = document.getElementById('panelAlertasSamsara');
+  const btn = document.getElementById('btnAlertasSamsara');
+  
+  panel.classList.toggle('hidden');
+  btn.classList.toggle('active');
+  
+  if (!panel.classList.contains('hidden')) {
+    cargarAlertasSamsara();
+  }
+}
+
+
+function cargarAlertasSamsara() {
+  const cont = document.getElementById('alertasSamsaraList');
+  if (!cont) {
+    console.error('Elemento alertasSamsaraList no encontrado');
+    return;
+  }
+  
+  cont.innerHTML = '<div class="tbl-loading"><div class="spin dark"></div></div>';
+  
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res || !res.ok) {
+        cont.innerHTML = '<div class="empty-sm">Error al cargar alertas</div>';
+        return;
+      }
+      
+      const alertas = res.alertas || [];
+      setBadge('nb-samsara', alertas.length);
+      
+      if (!alertas.length) {
+        cont.innerHTML = '<div class="empty-sm">Sin alertas Samsara</div>';
+        return;
+      }
+      
+      const ico = {
+        'DeviceLocationInsideGeofence': '📍',
+        'DeviceSpeeding': '⚡',
+        'HarshBraking': '🛑',
+        'HarshAcceleration': '🚀',
+        'FuelAnomalies': '⛽',
+      };
+      
+      cont.innerHTML = alertas.map(a => {
+        const i = ico[a.TIPO] || '🚨';
+        const cls = a.ESTADO === 'RESUELTO' ? 'alerta-resuelto' : 'alerta-abierto';
+        return '<div class="alerta-item ' + cls + '">' +
+          '<div class="ai-ico">' + i + '</div>' +
+          '<div class="ai-body">' +
+            '<div class="ai-uni">' + a.UNIDAD + '</div>' +
+            '<div class="ai-tipo">' + (a.TIPO || '').replace(/_/g, ' ') + '</div>' +
+            '<div class="ai-det">' + (a.DETALLES || '—') + '</div>' +
+            '<div class="ai-meta">' + fmtHora(a.FECHA) + ' · ' + a.ESTADO + '</div>' +
+          '</div>' +
+          (a.URL_SAMSARA ? '<a href="' + a.URL_SAMSARA + '" target="_blank" class="ai-link">Ver →</a>' : '') +
+        '</div>';
+      }).join('');
+    })
+    .withFailureHandler(e => {
+      console.error('Error cargarAlertasSamsara:', e.message);
+      cont.innerHTML = '<div class="empty-sm">Error: ' + e.message + '</div>';
+    })
+    .obtenerAlertasSamsara(APP.token);
+}
+
+// Auto-actualizar alertas cada 10 segundos (deshabilitado por ahora)
+// setInterval(() => {
+//   if (document.getElementById('panelAlertasSamsara') && 
+//       !document.getElementById('panelAlertasSamsara').classList.contains('hidden')) {
+//     cargarAlertasSamsara();
+//   }
+// }, 10000);
+</script>
