@@ -381,6 +381,7 @@ function obtenerEstadoFlota(token, estacion) {
     const rawNovedades = _leerHojaInterna_(ss, CFG.H_NOVEDADES, 14);
     const rawSLA = _leerHojaInterna_(ss, CFG.H_SLA, 11);
     const rawTraspasos = _leerHojaInterna_(ss, CFG.H_TRASPASOS, 14);
+    const rawSamsara = _leerHojaInterna_(ss, CFG.H_ALERTAS_SAMSARA, 9);
 
     const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
     const ahora = new Date();
@@ -476,8 +477,8 @@ function obtenerEstadoFlota(token, estacion) {
       .sort((a, b) => new Date(b[1]) - new Date(a[1]))
       .forEach(r => {
         const u = r[3] ? r[3].toString().trim() : '';
-        if (u && !mapaBarridos[u]) {
-          mapaBarridos[u] = {
+        if (u && !barridosGlobal[u]) {
+          barridosGlobal[u] = {
             fecha: r[1],
             cargaStatus: r[8] ? r[8].toString().trim() : '—',
             sentido: r[9] ? r[9].toString().trim() : '—',
@@ -586,13 +587,13 @@ function obtenerEstadoFlota(token, estacion) {
       sinBarrido: unidades.filter(u => u._alertaSLA).length,
       enTransito: enTransito.length,
       compartidas: enTransito.length,
-
     };
 
     // ── NOVEDADES PANEL (con todos los campos) ────────────────────
     const colsNov = ["ID_INC", "FECHA_HORA", "ESTACION", "UNIDAD", "REMOLQUE", "TIPO",
       "DESCRIPCION", "MONITORISTA", "ESTADO_INC", "EMAIL_ENVIADO",
       "HORA_EMAIL", "RESOLUCION", "LAT", "LNG"];
+
     const novedadesPanel = rawNovedades
       .filter(r => {
         const f = r[1] instanceof Date ? r[1] : new Date(r[1]);
@@ -600,17 +601,50 @@ function obtenerEstadoFlota(token, estacion) {
       })
       .map(r => _toObj(colsNov, r));
 
-    Logger.log("obtenerEstadoFlota OK: " + unidades.length + " unidades, " +
-      tareasSLA.length + " SLA, " + timers.length + " timers");
+    // ── ALERTAS SAMSARA ───────────────────────────────────────────
+    const alertasSamsara = rawSamsara
+      .filter(r => {
+        if (!r[0] || !r[1]) return false;
+        const f = r[1] instanceof Date ? r[1] : new Date(r[1]);
+        if (f < hoy) return false;
+        if (r[4] === "resuelto") return false; // Ignorar resueltas
+        return !estFiltro || r[2] === estFiltro;
+      })
+      .map(r => ({
+        ID_INC: r[0],
+        FECHA_HORA: r[1],
+        ESTACION: estFiltro,
+        UNIDAD: r[2],
+        REMOLQUE: "",
+        TIPO: "SAMSARA_" + (r[3] || "ALERT"),
+        DESCRIPCION: r[6] || "",
+        MONITORISTA: "SAMSARA",
+        ESTADO_INC: "ABIERTA",
+        EMAIL_ENVIADO: "NO",
+        HORA_EMAIL: "",
+        RESOLUCION: "",
+        LAT: "",
+        LNG: "",
+        _samsara: true,
+        _severidad: r[4] || "info"
+      }));
 
+    // ── COMBINAR NOVEDADES + ALERTAS SAMSARA ──────────────────────
+    const novedadesPanel2 = [...novedadesPanel, ...alertasSamsara];
+
+    // ── RESULTADO FINAL ───────────────────────────────────────────
     const resultado = {
       ok: true, unidades, tareasSLA,
-      novedades: novedadesPanel,
+      novedades: novedadesPanel2,
       timers, resumen, enTransito,
       tareasCriticas: tareasSLA.filter(t => t._enBreach).length,
       timersVencidos: timers.filter(t => t.alerta).length,
     };
-    Logger.log("SERIALIZANDO: " + JSON.stringify(resultado).substring(0, 500));
+
+    Logger.log("obtenerEstadoFlota OK: " + unidades.length + " unidades, " +
+      tareasSLA.length + " SLA, " + timers.length + " timers, " +
+      alertasSamsara.length + " alertas Samsara");
+
     return _sanitize(resultado);
 
   } catch (e) {
@@ -1281,7 +1315,7 @@ function inicializarSistema() {
     [CFG.H_TRASPASOS]: ["ID_TRP", "FECHA_INICIO", "UNIDAD", "EST_ORIGEN", "EST_DESTINO",
       "REMOLQUE", "DOLLY", "REMOLQUE2", "TIPO_CARGA", "OBSERVACIONES",
       "MONITORISTA", "ESTADO", "FECHA_RETORNO", "MONITORISTA_RETORNO"],
-      [CFG.H_ALERTAS_SAMSARA]: ["ID_ALERTA","FECHA","UNIDAD","TIPO","ESTADO","DETALLES","VIN","URL_SAMSARA"],
+    [CFG.H_ALERTAS_SAMSARA]: ["ID_ALERTA", "FECHA", "UNIDAD", "TIPO", "SEVERIDAD", "ESTADO", "DETALLES", "VIN", "URL_SAMSARA"],
   };
   for (const [nom, cols] of Object.entries(esquemas)) {
     const h = ss.getSheetByName(nom) || ss.insertSheet(nom);
@@ -1380,115 +1414,437 @@ function _normEst(s) {
   return (s || '').toString().replace(/\u00A0|\s+/g, ' ').trim();
 }
 
+
+
 function doPost(e) {
   try {
-    Logger.log('=== WEBHOOK SAMSARA RECIBIDO ===');
+    const timestamp = new Date().toISOString();
+    const logSheet = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('DB_Novedades') || _hoja('DB_Novedades');
     
-    if (!e || !e.postData) {
-      Logger.log('ERROR: No hay datos POST (prueba manual o payload vacío)');
-      return ContentService.createTextOutput('ERROR: No postData');
+    // Log en la hoja
+    const logMsg = [];
+    logMsg.push('=== WEBHOOK ' + timestamp + ' ===');
+    logMsg.push('e.postData exists: ' + (e && e.postData ? 'YES' : 'NO'));
+    
+    let body = '';
+    if (e && e.postData && e.postData.contents) {
+      body = e.postData.contents;
+      logMsg.push('Body length: ' + body.length);
+      logMsg.push('Body: ' + body.substring(0, 500));
+    } else if (e && e.postData && typeof e.postData === 'string') {
+      body = e.postData;
+      logMsg.push('Body (string): ' + body.substring(0, 500));
+    } else {
+      logMsg.push('NO BODY FOUND');
+      logMsg.push('e keys: ' + (e ? Object.keys(e).join(', ') : 'null'));
     }
-    
-    const body = e.postData.contents;
-    Logger.log('PAYLOAD COMPLETO: ' + body);
-    
-    if (!body) {
-      Logger.log('ERROR: Body vacío');
-      return ContentService.createTextOutput('ERROR: No body');
+
+    // Guardar log en hoja temporal
+    const logHoja = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('Alertas_Samsara');
+    if (logHoja) {
+      logHoja.appendRow(['LOG-' + Date.now(), timestamp, 'DEBUG', logMsg.join(' | '), '', '', '', '', '']);
     }
+
+    if (!body || body.length === 0) {
+      return ContentService.createTextOutput('OK');
+    }
+
+    // Parsear
+    let payload = JSON.parse(body);
     
-    const payload = JSON.parse(body);
-    Logger.log('PAYLOAD PARSEADO: ' + JSON.stringify(payload));
+    // Procesar
     procesarWebhookSamsara(payload);
     return ContentService.createTextOutput('OK');
-    
-  } catch(ex) {
-    Logger.log('EXCEPTION: ' + ex.message + ' | ' + ex.stack);
-    return ContentService.createTextOutput('ERROR: ' + ex.message);
+
+  } catch (ex) {
+    const logHoja = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('Alertas_Samsara');
+    if (logHoja) {
+      logHoja.appendRow(['ERROR-' + Date.now(), new Date().toISOString(), 'ERROR', ex.message, ex.stack || '', '', '', '', '']);
+    }
+    return ContentService.createTextOutput('OK');
   }
 }
 
+/**
+ * Valida la firma HMAC-SHA256 del webhook
+ */
+function validarFirmaSamsara(timestamp, body, signature) {
+  try {
+    // Construcción del mensaje: timestamp + body
+    const message = timestamp + body;
+    const secret = SAMSARA_WEBHOOK_SECRET || '';
+
+    if (!secret) {
+      Logger.log('⚠️ SAMSARA_WEBHOOK_SECRET no está definido');
+      return false;
+    }
+
+    // Calcular firma esperada
+    const hmac = Utilities.computeHmacSha256Signature(message, secret);
+    const expectedSignature = Utilities.bytesToHex(hmac);
+
+    Logger.log('Firma esperada: ' + expectedSignature);
+    Logger.log('Firma recibida: ' + signature);
+    Logger.log('Coinciden: ' + (expectedSignature === signature));
+
+    return expectedSignature === signature;
+
+  } catch (ex) {
+    Logger.log('❌ Error al validar firma: ' + ex.message);
+    return false;
+  }
+}
+
+/**
+ * Procesa webhooks de Samsara (detecta automáticamente versión 1.0 o 2.0)
+ */
 function procesarWebhookSamsara(payload) {
   try {
-    Logger.log('PAYLOAD COMPLETO: ' + JSON.stringify(payload));
-    
-    const evt     = payload.event || {};
-    const device  = evt.device   || {};
-    
-    const unidad  = device.name  || device.id  || 'Desconocida';
-    const tipo    = evt.alertConditionId        || 'Alerta';
-    const desc    = evt.details  || evt.summary || evt.alertConditionDescription || '';
-    const resuelto = evt.resolved ? 'RESUELTO'  : 'ABIERTO';
-    const vin     = device.vin   || '';
-    const url     = evt.alertEventUrl           || '';
-    
-    Logger.log('Unidad: ' + unidad + ' | Tipo: ' + tipo + ' | Desc: ' + desc);
-    
-    const id = 'SAM-' + new Date().getTime();
-    _hoja(CFG.H_ALERTAS_SAMSARA).appendRow([
-      id,
-      new Date(),
-      unidad,
-      tipo,
-      resuelto,
-      desc,
-      vin,
-      url,
-    ]);
-    
-    Logger.log('✅ Alerta guardada: ' + id);
-    
-  } catch(e) {
-    Logger.log('procesarWebhookSamsara ERROR: ' + e.message + '\n' + e.stack);
+    Logger.log('Detectando versión de webhook...');
+    Logger.log('EventType: ' + payload.eventType);
+
+    // Ignorar Pings
+    if (payload.eventType === 'Ping') {
+      Logger.log('⊘ Ping recibido - ignorando');
+      const logHoja = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('Alertas_Samsara');
+      if (logHoja) {
+        logHoja.appendRow(['PING-' + Date.now(), new Date().toISOString(), 'PING', 'Webhook Ping recibido - OK', '', '', '', '', '']);
+      }
+      return;
+    }
+
+    // Detectar AlertIncident (nuevo formato Samsara)
+    if (payload.eventType === 'AlertIncident') {
+      Logger.log('📌 Detectado: AlertIncident');
+      procesarWebhookSamsara2(payload);
+      return;
+    }
+
+    // Detectar versión 2.0 antiguo
+    if (payload.eventType === 'alerts.vehicle_alert') {
+      Logger.log('📌 Detectado: alerts.vehicle_alert');
+      procesarWebhookSamsara2(payload);
+      return;
+    }
+
+    // Detectar versión 1.0
+    if (payload.event) {
+      Logger.log('📌 Detectado: Webhook 1.0');
+      procesarWebhookSamsara1(payload);
+      return;
+    }
+
+    Logger.log('⚠️ EventType desconocido: ' + payload.eventType);
+
+  } catch (ex) {
+    Logger.log('❌ Error en procesarWebhookSamsara: ' + ex.message);
   }
 }
 
-function obtenerAlertasSamsara(token) {
-  const sess = validarToken(token);
-  if (!sess) return { ok: false, msg: "Sesión expirada" };
-  
-  try {
-    const h = _hoja(CFG.H_ALERTAS_SAMSARA);
-    if (h.getLastRow() < 2) return { ok: true, alertas: [] };
-    
-    const hoy = new Date(); 
-    hoy.setHours(0, 0, 0, 0);
-    
-    const cols = h.getRange(1, 1, 1, 8).getValues()[0];
-    const alertas = h.getRange(2, 1, h.getLastRow() - 1, 8).getValues()
-      .filter(r => {
-        const f = r[1] instanceof Date ? r[1] : new Date(r[1]);
-        return f >= hoy;
-      })
-      .map(r => _toObj(cols, r))
-      .sort((a, b) => new Date(b.FECHA) - new Date(a.FECHA));
-    
-    return { ok: true, alertas };
-  } catch(e) {
-    Logger.log('obtenerAlertasSamsara ERROR: ' + e.message);
-    return { ok: false, msg: e.message };
-  }
-}
-function testDoPost() {
+/**
+ * Procesa Webhooks 2.0 de Samsara (nuevo formato)
+ */
+function testWebhook2() {
+  Logger.log('=== TEST WEBHOOK 2.0 (AlertIncident) ===');
+
   const testPayload = {
-    eventId: "test-123",
-    eventMs: new Date().getTime(),
-    eventType: "Alert",
-    event: {
-      vehicle: { name: "TEST-UNIT", id: "123" },
-      alertConditionId: "TestAlert",
-      details: "Test alert",
-      resolved: false
+    "eventId": "017db07f-6e95-470e-8cc0-a371f9deed2b",
+    "eventTime": "2026-05-15T14:53:09.683Z",
+    "eventType": "AlertIncident",
+    "orgId": 20936,
+    "webhookId": "1411751028848270",
+    "data": {
+      "configurationId": "9814a1fa-f0c6-408b-bf85-51dc3bc71ac7",
+      "happenedAtTime": "2026-05-15T14:53:09Z",
+      "resolvedAtTime": null,
+      "updatedAtTime": "2026-05-15T14:53:09Z",
+      "incidentUrl": "https://cloud.samsara.com/alerts/123456",
+      "isResolved": false,
+      "conditions": [
+        {
+          "description": "Harsh Acceleration",
+          "details": {
+            "geofenceEntry": {
+              "vehicle": {
+                "id": "494123",
+                "name": "UNIDAD-TEST-01",
+                "serial": "ABC123DEF456",
+                "externalIds": {
+                  "maintenanceId": "250020"
+                }
+              },
+              "driver": {
+                "id": "45646",
+                "name": "Driver Bob"
+              }
+            }
+          },
+          "triggerId": 5016
+        }
+      ]
     }
   };
-  
+
   const e = {
     postData: {
-      contents: JSON.stringify(testPayload)
+      contents: JSON.stringify(testPayload),
+      headers: {}
     },
     parameter: {}
   };
-  
-  Logger.log("Ejecutando doPost con payload de test...");
+
+  Logger.log('Ejecutando doPost con payload AlertIncident...');
   doPost(e);
+}
+
+/**
+ * Procesa Webhooks 1.0 de Samsara (formato antiguo)
+ */
+function procesarWebhookSamsara1(payload) {
+  try {
+    Logger.log('⚙️ Procesando Webhook 1.0...');
+
+    const evt = payload.event || {};
+    const device = evt.device || evt.vehicle || {};
+
+    const vehicleName = device.name || device.id || 'Desconocida';
+    const alertType = evt.alertConditionId || evt.type || 'Alerta';
+    const detalles = evt.details || evt.summary || evt.alertConditionDescription || '';
+    const estado = evt.resolved ? 'resuelto' : 'abierto';
+    const vin = device.vin || '';
+    const alertId = evt.alertEventUrl || evt.id || '';
+
+    const id_alerta = 'SAM-' + new Date().getTime();
+    const fecha = new Date().toLocaleString('es-MX');
+
+    Logger.log('🚨 ALERTA DETECTADA (v1.0):');
+    Logger.log('  - Unidad: ' + vehicleName);
+    Logger.log('  - Tipo: ' + alertType);
+    Logger.log('  - Fecha: ' + fecha);
+
+    // Guardar alerta
+    guardarAlertaSamsara(id_alerta, fecha, vehicleName, alertType, 'info', estado, detalles, vin, alertId);
+
+    // Registrar como novedad si existe la función
+    if (typeof registrarNovedad === 'function') {
+      registrarNovedad('SAMSARA_ALERT', vehicleName, alertType, detalles);
+    }
+
+  } catch (ex) {
+    Logger.log('❌ Error en procesarWebhookSamsara1: ' + ex.message);
+    Logger.log('Stack: ' + ex.stack);
+  }
+}
+
+/**
+ * Guarda una alerta en la hoja de cálculo
+ */
+function guardarAlertaSamsara(id, fecha, unidad, tipo, severidad, estado, detalles, vin, url) {
+  try {
+    const ss = _libroPrincipal();
+    let hoja = ss.getSheetByName(CFG.H_ALERTAS_SAMSARA);
+
+    // Crear hoja si no existe
+    if (!hoja) {
+      Logger.log('📝 Creando hoja Alertas_Samsara...');
+      hoja = ss.insertSheet('Alertas_Samsara');
+      hoja.appendRow([
+        'ID_ALERTA',
+        'FECHA',
+        'UNIDAD',
+        'TIPO',
+        'SEVERIDAD',
+        'ESTADO',
+        'DETALLES',
+        'VIN',
+        'URL_SAMSARA'
+      ]);
+    }
+
+    // Agregar fila de alerta
+    hoja.appendRow([id, fecha, unidad, tipo, severidad, estado, detalles, vin, url]);
+    Logger.log('✅ Alerta guardada: ' + id);
+
+  } catch (ex) {
+    Logger.log('❌ Error al guardar alerta: ' + ex.message);
+  }
+}
+
+/**
+ * Obtiene alertas del día de Samsara
+ */
+function obtenerAlertasSamsara(token) {
+  try {
+    const ss = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL);
+    const hoja = ss.getSheetByName('Alertas_Samsara');
+
+    if (!hoja) {
+      Logger.log('⚠️ Hoja Alertas_Samsara no existe');
+      return [];
+    }
+
+    const datos = hoja.getDataRange().getValues();
+    if (datos.length <= 1) {
+      Logger.log('ℹ️ No hay alertas registradas');
+      return [];
+    }
+
+    const hoy = new Date().toLocaleDateString('es-MX');
+    const alertas = [];
+
+    for (let i = 1; i < datos.length; i++) {
+      const row = datos[i];
+      const fecha = new Date(row[1]).toLocaleDateString('es-MX');
+
+      if (fecha === hoy) {
+        alertas.push({
+          id: row[0],
+          fecha: row[1],
+          unidad: row[2],
+          tipo: row[3],
+          severidad: row[4],
+          estado: row[5],
+          detalles: row[6],
+          vin: row[7],
+          url: row[8]
+        });
+      }
+    }
+
+    Logger.log('📊 Alertas encontradas hoy: ' + alertas.length);
+    return alertas;
+
+  } catch (ex) {
+    Logger.log('❌ Error al leer alertas: ' + ex.message);
+    return [];
+  }
+}
+
+/**
+ * Función de prueba para webhooks 2.0
+ */
+function testWebhook2() {
+  Logger.log('=== TEST WEBHOOK 2.0 ===');
+
+  const testPayload = {
+    eventType: 'alerts.vehicle_alert',
+    id: 'test-event-123',
+    data: {
+      id: 'alert-456',
+      type: 'harsh_acceleration',
+      severity: 'high',
+      triggeredAt: new Date().toISOString(),
+      resolvedAt: null,
+      vehicle: {
+        id: 'vehicle-789',
+        name: 'UNIDAD-TEST-01',
+        vin: 'ABC123DEF456'
+      },
+      details: {
+        location: 'Test Location',
+        speed: 80
+      }
+    }
+  };
+
+  const e = {
+    postData: {
+      contents: JSON.stringify(testPayload),
+      headers: {}
+    },
+    parameter: {}
+  };
+
+  Logger.log('Ejecutando doPost con payload 2.0...');
+  doPost(e);
+}
+
+/**
+ * Función de prueba para webhooks 1.0
+ */
+function testWebhook1() {
+  Logger.log('=== TEST WEBHOOK 1.0 ===');
+
+  const testPayload = {
+    eventId: 'test-123',
+    eventMs: new Date().getTime(),
+    eventType: 'Alert',
+    event: {
+      device: {
+        name: 'UNIDAD-TEST-02',
+        id: 'device-999',
+        vin: 'XYZ789ABC123'
+      },
+      alertConditionId: 'harsh_braking',
+      details: 'Frenado fuerte detectado',
+      resolved: false,
+      alertEventUrl: 'https://samsara.com/alerts/123'
+    }
+  };
+
+  const e = {
+    postData: {
+      contents: JSON.stringify(testPayload),
+      headers: {}
+    },
+    parameter: {}
+  };
+
+  Logger.log('Ejecutando doPost con payload 1.0...');
+  doPost(e);
+}
+function procesarWebhookSamsara2(payload) {
+  try {
+    Logger.log('⚙️ Procesando AlertIncident...');
+
+    const data = payload.data || {};
+    const conditions = data.conditions || [];
+    
+    if (!conditions.length) {
+      Logger.log('⊘ Sin condiciones');
+      return;
+    }
+
+    const condition = conditions[0];
+    const details = condition.details || {};
+    
+    // Buscar vehicle en diferentes lugares
+    let vehicle = {};
+    let alertType = 'AlertIncident';
+    
+    // Panic Button
+    if (details.panicButton) {
+      vehicle = details.panicButton.vehicle || {};
+      alertType = 'Panic Button';
+    }
+    // Geofence Entry
+    else if (details.geofenceEntry) {
+      vehicle = details.geofenceEntry.vehicle || {};
+      alertType = 'Geofence Entry';
+    }
+    // Harsh Acceleration, Speeding, etc
+    else if (details.vehicle) {
+      vehicle = details.vehicle;
+    }
+    
+    // Extraer datos
+    const vehicleName = vehicle.name || vehicle.id || 'Desconocida';
+    const vin = vehicle.serial || vehicle.externalIds?.samsara?.vin || '';
+    const triggeredAt = data.happenedAtTime || new Date().toISOString();
+    const estado = data.isResolved ? 'resuelto' : 'abierto';
+    const detalles = JSON.stringify(details);
+    const incidentUrl = data.incidentUrl || '';
+
+    const fecha = new Date(triggeredAt).toLocaleString('es-MX');
+    const id_alerta = 'SAM-' + new Date().getTime();
+
+    Logger.log('🚨 ALERTA: ' + vehicleName + ' - ' + alertType + ' - ' + estado);
+
+    // Guardar
+    guardarAlertaSamsara(id_alerta, fecha, vehicleName, alertType, 'alert', estado, detalles, vin, incidentUrl);
+
+  } catch (ex) {
+    Logger.log('❌ Error: ' + ex.message);
+    Logger.log(ex.stack);
+  }
 }
