@@ -1793,6 +1793,14 @@ function testWebhook1() {
   Logger.log('Ejecutando doPost con payload 1.0...');
   doPost(e);
 }
+/**
+ * Procesa Webhooks 2.0 de Samsara (AlertIncident) - VERSIÓN GENÉRICA
+ * Detecta automáticamente cualquier tipo de evento sin necesidad de hardcodear
+ */
+/**
+ * Procesa Webhooks 2.0 de Samsara (AlertIncident) - VERSIÓN GENÉRICA
+ * Detecta automáticamente cualquier tipo de evento sin necesidad de hardcodear
+ */
 function procesarWebhookSamsara2(payload) {
   try {
     Logger.log('⚙️ Procesando AlertIncident...');
@@ -1808,28 +1816,53 @@ function procesarWebhookSamsara2(payload) {
     const condition = conditions[0];
     const details = condition.details || {};
     
-    // Buscar vehicle en diferentes lugares
+    // DETECCIÓN AUTOMÁTICA: buscar objeto con "vehicle" O "trailer"
     let vehicle = {};
     let alertType = 'AlertIncident';
+    let eventKey = '';
     
-    // Panic Button
-    if (details.panicButton) {
-      vehicle = details.panicButton.vehicle || {};
-      alertType = 'Panic Button';
+    // Buscar recursivamente en details
+    for (const key in details) {
+      if (details[key] && typeof details[key] === 'object') {
+        // Buscar vehicle o trailer
+        if (details[key].vehicle) {
+          vehicle = details[key].vehicle;
+          alertType = key
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/^./, str => str.toUpperCase())
+            .trim();
+          eventKey = key;
+          Logger.log('🔍 Detectado evento (vehicle): ' + eventKey + ' → ' + alertType);
+          break;
+        }
+        else if (details[key].trailer) {
+          vehicle = details[key].trailer;
+          alertType = key
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/^./, str => str.toUpperCase())
+            .trim();
+          eventKey = key;
+          Logger.log('🔍 Detectado evento (trailer): ' + eventKey + ' → ' + alertType);
+          break;
+        }
+      }
     }
-    // Geofence Entry
-    else if (details.geofenceEntry) {
-      vehicle = details.geofenceEntry.vehicle || {};
-      alertType = 'Geofence Entry';
-    }
-    // Harsh Acceleration, Speeding, etc
-    else if (details.vehicle) {
-      vehicle = details.vehicle;
+    
+    // Si no encontró, buscar directamente en details
+    if (!vehicle || !vehicle.id) {
+      if (details.vehicle) {
+        vehicle = details.vehicle;
+        alertType = 'Alert';
+      }
+      else if (details.trailer) {
+        vehicle = details.trailer;
+        alertType = 'Trailer Alert';
+      }
     }
     
     // Extraer datos
     const vehicleName = vehicle.name || vehicle.id || 'Desconocida';
-    const vin = vehicle.serial || vehicle.externalIds?.samsara?.vin || '';
+    const vin = vehicle.serial || vehicle.trailerSerialNumber || vehicle.externalIds?.samsara?.vin || '';
     const triggeredAt = data.happenedAtTime || new Date().toISOString();
     const estado = data.isResolved ? 'resuelto' : 'abierto';
     const detalles = JSON.stringify(details);
