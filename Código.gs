@@ -1418,31 +1418,11 @@ function _normEst(s) {
 
 function doPost(e) {
   try {
-    const timestamp = new Date().toISOString();
-    const logSheet = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('DB_Novedades') || _hoja('DB_Novedades');
-    
-    // Log en la hoja
-    const logMsg = [];
-    logMsg.push('=== WEBHOOK ' + timestamp + ' ===');
-    logMsg.push('e.postData exists: ' + (e && e.postData ? 'YES' : 'NO'));
-    
     let body = '';
     if (e && e.postData && e.postData.contents) {
       body = e.postData.contents;
-      logMsg.push('Body length: ' + body.length);
-      logMsg.push('Body: ' + body.substring(0, 500));
     } else if (e && e.postData && typeof e.postData === 'string') {
       body = e.postData;
-      logMsg.push('Body (string): ' + body.substring(0, 500));
-    } else {
-      logMsg.push('NO BODY FOUND');
-      logMsg.push('e keys: ' + (e ? Object.keys(e).join(', ') : 'null'));
-    }
-
-    // Guardar log en hoja temporal
-    const logHoja = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('Alertas_Samsara');
-    if (logHoja) {
-      logHoja.appendRow(['LOG-' + Date.now(), timestamp, 'DEBUG', logMsg.join(' | '), '', '', '', '', '']);
     }
 
     if (!body || body.length === 0) {
@@ -1457,10 +1437,6 @@ function doPost(e) {
     return ContentService.createTextOutput('OK');
 
   } catch (ex) {
-    const logHoja = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL).getSheetByName('Alertas_Samsara');
-    if (logHoja) {
-      logHoja.appendRow(['ERROR-' + Date.now(), new Date().toISOString(), 'ERROR', ex.message, ex.stack || '', '', '', '', '']);
-    }
     return ContentService.createTextOutput('OK');
   }
 }
@@ -1674,49 +1650,61 @@ function guardarAlertaSamsara(id, fecha, unidad, tipo, severidad, estado, detall
  * Obtiene alertas del día de Samsara
  */
 function obtenerAlertasSamsara(token) {
+  const sess = validarToken(token);
+  if (!sess) return { ok: false, msg: "Sesión expirada" };
+  
   try {
-    const ss = SpreadsheetApp.openById(CFG.ID_LIBRO_PRINCIPAL);
-    const hoja = ss.getSheetByName('Alertas_Samsara');
+    const ss = _libroPrincipal();
+    const hoja = ss.getSheetByName(CFG.H_ALERTAS_SAMSARA);
+    
+    if (!hoja || hoja.getLastRow() < 2) return { ok: true, data: [] };
+    
+    const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+    const cols = ['ID_ALERTA', 'FECHA', 'UNIDAD', 'TIPO', 'SEVERIDAD', 'ESTADO', 'DETALLES', 'VIN', 'URL_SAMSARA'];
+    const datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, 9).getValues();
+    
+    const alertas = datos
+      .filter(r => {
+        const f = r[1] instanceof Date ? r[1] : new Date(r[1]);
+        return f >= hoy;
+      })
+      .map(r => ({
+        ID_INC: r[0],
+        FECHA_HORA: r[1],
+        UNIDAD: r[2],
+        TIPO: r[3],
+        SEVERIDAD: r[4],
+        ESTADO: r[5],
+        DETALLES: r[6],
+        VIN: r[7],
+        URL_SAMSARA: r[8],
+        _severidad: r[4]
+      }))
+      .sort((a,b) => new Date(b.FECHA_HORA) - new Date(a.FECHA_HORA));
+    
+    return { ok: true, data: alertas };
+  } catch(ex) {
+    return { ok: false, msg: ex.message };
+  }
+}
 
-    if (!hoja) {
-      Logger.log('⚠️ Hoja Alertas_Samsara no existe');
-      return [];
+function marcarAlertaAtendida(token, idAlerta, monitorista) {
+  const sess = validarToken(token);
+  if (!sess) return { ok: false };
+  
+  try {
+    const hoja = _hoja(CFG.H_ALERTAS_SAMSARA);
+    const rows = hoja.getRange(2, 1, hoja.getLastRow() - 1, 9).getValues();
+    const idx = rows.findIndex(r => r[0] === idAlerta);
+    
+    if (idx >= 0) {
+      // Agregar columna de "Atendida por" si no existe
+      hoja.getRange(idx + 2, 10).setValue(monitorista); // Columna 10
+      return { ok: true };
     }
-
-    const datos = hoja.getDataRange().getValues();
-    if (datos.length <= 1) {
-      Logger.log('ℹ️ No hay alertas registradas');
-      return [];
-    }
-
-    const hoy = new Date().toLocaleDateString('es-MX');
-    const alertas = [];
-
-    for (let i = 1; i < datos.length; i++) {
-      const row = datos[i];
-      const fecha = new Date(row[1]).toLocaleDateString('es-MX');
-
-      if (fecha === hoy) {
-        alertas.push({
-          id: row[0],
-          fecha: row[1],
-          unidad: row[2],
-          tipo: row[3],
-          severidad: row[4],
-          estado: row[5],
-          detalles: row[6],
-          vin: row[7],
-          url: row[8]
-        });
-      }
-    }
-
-    Logger.log('📊 Alertas encontradas hoy: ' + alertas.length);
-    return alertas;
-
-  } catch (ex) {
-    Logger.log('❌ Error al leer alertas: ' + ex.message);
-    return [];
+    return { ok: false };
+  } catch(ex) {
+    return { ok: false, msg: ex.message };
   }
 }
 
@@ -1793,10 +1781,6 @@ function testWebhook1() {
   Logger.log('Ejecutando doPost con payload 1.0...');
   doPost(e);
 }
-/**
- * Procesa Webhooks 2.0 de Samsara (AlertIncident) - VERSIÓN GENÉRICA
- * Detecta automáticamente cualquier tipo de evento sin necesidad de hardcodear
- */
 /**
  * Procesa Webhooks 2.0 de Samsara (AlertIncident) - VERSIÓN GENÉRICA
  * Detecta automáticamente cualquier tipo de evento sin necesidad de hardcodear
@@ -1880,4 +1864,48 @@ function procesarWebhookSamsara2(payload) {
     Logger.log('❌ Error: ' + ex.message);
     Logger.log(ex.stack);
   }
+}
+function cargarAlertasSamsara() {
+  google.script.run.withSuccessHandler(function(res) {
+    if (!res.ok) return toast(res.msg, 'error');
+    
+    const body = document.getElementById('alertasSamsaraBody');
+    body.innerHTML = '';
+    
+    if (!res.data || res.data.length === 0) {
+      body.innerHTML = '<tr><td colspan="8" class="tbl-empty">Sin alertas</td></tr>';
+      return;
+    }
+    
+    res.data.forEach(alerta => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${new Date(alerta.FECHA_HORA).toLocaleString('es-MX')}</td>
+        <td><strong>${alerta.UNIDAD}</strong></td>
+        <td>${alerta.TIPO}</td>
+        <td><span class="badge" style="background:${alerta._severidad === 'high' ? '#ef4444' : '#f59e0b'}">${alerta._severidad || 'alert'}</span></td>
+        <td>${alerta.ESTADO}</td>
+        <td><a href="${alerta.URL_SAMSARA}" target="_blank" class="link-sm">Ver en Samsara →</a></td>
+        <td id="atendida-${alerta.ID_INC}">—</td>
+        <td>
+          <button class="btn-xs" onclick="marcarAtendida('${alerta.ID_INC}', '${alerta.UNIDAD}')">Atender</button>
+        </td>
+      `;
+      body.appendChild(tr);
+    });
+    
+    document.getElementById('nb-alertas-samsara').textContent = res.data.length;
+    document.getElementById('nb-alertas-samsara').classList.remove('hidden');
+    
+  }).obtenerAlertasSamsara(token);
+}
+
+function marcarAtendida(idAlerta, unidad) {
+  const monitorista = sess.nombre;
+  google.script.run.withSuccessHandler(function(res) {
+    if (res.ok) {
+      document.getElementById('atendida-' + idAlerta).textContent = monitorista;
+      toast('Alerta marcada como atendida', 'success');
+    }
+  }).marcarAlertaAtendida(token, idAlerta, monitorista);
 }
