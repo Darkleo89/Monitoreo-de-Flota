@@ -50,12 +50,76 @@ const CFG = {
     "INFRACCION_DADIVA",
   ],
 };
+const SAMSARA_CONFIG_NAMES = {
+'dd098d27-d8eb-42b1-97d8-c9427ee5df8e':'Parada No Autorizada CBMX1',
+'c3b0b3db-fc7e-4628-b9d3-f90f47bf0a4a':'Parada No Autorizada CMX1',
+'ce129860-1821-46e7-a876-43c455a1f9c5':'Parada No Autorizada ACV.',
+'2ac7f9ad-eacf-4faa-a027-78e0937e208a':'Parada No Autorizada Peninsula1.',
+'4380d81b-bed3-4d31-8e81-ead59088b5ce':'Parada No Autorizada Peninsula2',
+'87077ea7-c192-49fb-8d80-f76ebd05f1af':'Parada No Autorizada Alva.',
+'f1e3fdb6-7856-487e-b403-86b69381bab1':'Accidentes / Prevencion',
+'a9979913-31e1-49c2-94b8-caeac5b2fded':'Frenada / Viraje Brusco península',
+'06a90590-dfe1-4c7c-b301-994febacbca6':'Frenada / Viraje Brusco Peninsula 2',
+'8bc8a067-7091-4fe4-a829-fd21ee31cdb0':'Frenada / Viraje Brusco México 1',
+'af00786f-ddf5-45e1-9f7e-a35d900a5d87':'Frenada / Viraje Brusco Bajio',
+'2a8b42c1-a008-4bb0-ba64-ac9d75d12f4a':'Frenada / Viraje Brusco México 2',
+'f18efc7d-996b-4fdb-99eb-25df3092437f':'Bajon de combustible',
+'74852bdf-7428-45a9-8166-c7b0fd32a708':'Desvio Pollo Vivo',
+'d407348e-4e4c-429a-a2ed-18f70dbd0941':'Conductor Grabando Bajio',
+'b16d60f1-7745-474a-8fa5-c35a06b27885':'Conductor Grabando MX',
+'7a113f65-f213-4b20-bf9f-affb6d3dd9bd':'Desvio de Ruta ACV',
+'da9f0e43-d346-43a9-a08e-f29fa00d0c10':'Desvio de Ruta Peninsula2',
+'8ebbc7f0-0273-4e97-905b-e9265b5fb735':'Seguridad_DesVR Peninsula1',
+'00922214-9dfc-45f0-9202-80cbeb365458':'Seguridad_DesVR Mx',
+'ae00a4af-9f90-4319-9130-29eb32d27ce3':'Seguridad_DesVR Bajio',
+'664b6326-2e81-4321-ac29-121a5c82cddf':'Seguridad_Desenchufada Peninsula2',
+'55b65c4e-82e6-4d0f-810b-4d47aecd1783':'Seguridad_Desenchufada Peninsula1',
+'4f889a85-5dfd-40d9-bb7b-0c52c11a05bb':'Seguridad_Desenchufada Mx',
+'77ac4e80-07b7-4552-bb16-cff8439a9b33':'Seguridad_Desenchufada B. Mx',
+'83ef11dc-ce74-4873-8a78-da5ae6a3484d':'Seguridad_Desenchufada bajio',
+'d437f2c3-aa0b-4091-a21d-53d1a0c8e072':'Seguridad_PSeñal Peninsula2',
+'3eeacd32-8864-43ff-878f-a37265f66c31':'Seguridad_PSeñal Peninsula1',
+'aa03a3e2-cdd2-4115-ab1a-52866a8c7e80':'Seguridad_PSeñal Mx.',
+'3a17eb0e-b66e-413c-81bd-748b5e54b145':'Seguridad_PSeñal B. Mx.',
+'00ec8797-8c72-4321-8941-d93de97f5838':'Seguridad_Jammer.Bajio',
+'63841843-d994-4b30-b29e-49c18e3f23f2':'Seguridad_DashCam Peninsula2',
+'ce606c73-832d-40a0-877e-a30bb03ddb6a':'Seguridad_DashCam Peninsula1',
+'6f97849f-ecdd-4281-84b6-6a157dd2e629':'Seguridad_DashCam Mx',
+'7b1e052e-992c-424e-a483-0cbbc633b489':'Seguridad_DashCam B. Mx',
+'2069cc91-0d80-4bfe-85bf-9539180addb7':'Seguridad_DashCam Bajio',
+'f85047ee-2412-46f8-b65e-b2e53e169e9c':'Botón de Pánico Península 2',
+'fc753ebf-17a8-4605-a7a4-27418ddb52a3':'Boton de Panico Peninsula 1',
+'b67f25c9-a91b-488c-aa8d-f36b5e17d68d':'Botón de Pánico C. Mx',
+'f4ddf9f8-2465-426c-ac71-2b65cc3624c7':'boton de Panico C. BMX',
+'6edc9c36-eb64-45ea-9caa-0b8fa42b53dc':'Botón de Pánico Bajío',
+'376581c5-7351-4c18-b695-729e00394d1d':'Accidente península 1',
+'7998803d-953d-43ac-a3aa-1e587e8c6ea5':'Accidente península 2',
+'aa000636-050d-47a7-b5e8-fa5ee97931c7':'Accidente Mexico 1',
+'0fd6499d-d55c-49c6-985c-2e3f4299edf4':'Accidente Base Mexico',
+'5a1a0a04-23d3-49ea-9cda-95d341894d91':'Accidente Alva',
+};
+
 
 // ══════════════════════════════════════════════════════════════════
 //  WEB APP
 // ══════════════════════════════════════════════════════════════════
 function doGet(e) {
-  return HtmlService.createTemplateFromFile("Index")
+  const url = ScriptApp.getService().getUrl(); // URL pública correcta
+  const app = e.parameter.app || 'flota';
+
+  if (app === 'alertas') {
+    const template = HtmlService.createTemplateFromFile("IndexAlertas");
+    template.appUrl = url; // ← pasar la URL al template
+    return template
+      .evaluate()
+      .setTitle("Alertas Samsara · GrupoGal")
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      .addMetaTag("viewport", "width=device-width, initial-scale=1");
+  }
+
+  const template = HtmlService.createTemplateFromFile("Index");
+  template.appUrl = url; // ← pasar la URL al template
+  return template
     .evaluate()
     .setTitle("Monitor de Flota PRO · GrupoGal")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
@@ -75,7 +139,7 @@ function include(filename) {
 // ══════════════════════════════════════════════════════════════════
 //  AUTENTICACIÓN
 // ══════════════════════════════════════════════════════════════════
-function login(usuario, contrasena, estacion) {
+function login(usuario, contrasena, estacion, appNombre) {  // ← nuevo parámetro
   try {
     const hU = _hojaExterna(CFG.BD_USUARIOS);
     if (hU.getLastRow() < 2) return { ok: false, msg: "Sin usuarios configurados." };
@@ -92,16 +156,19 @@ function login(usuario, contrasena, estacion) {
     const token = Utilities.getUuid();
     const expira = new Date();
     expira.setHours(expira.getHours() + CFG.TOKEN_HORAS);
+    const app = appNombre || "flota";  // ← "flota" o "alertas"
 
     const hT = _hoja(CFG.H_TOKENS);
     if (hT.getLastRow() > 1) {
-      const tRows = hT.getRange(2, 1, hT.getLastRow() - 1, 7).getValues();
+      const tRows = hT.getRange(2, 1, hT.getLastRow() - 1, 8).getValues();
       tRows.forEach((r, i) => {
-        if (r[1] === usuario && r[4] === "ACTIVO")
+        // ✅ Solo invalida tokens de la MISMA app
+        if (r[1] === usuario && r[4] === "ACTIVO" && (r[7] || "flota") === app)
           hT.getRange(i + 2, 5).setValue("INVALIDADO");
       });
     }
-    hT.appendRow([token, usuario, nombre, estacion, "ACTIVO", new Date(), expira]);
+
+    hT.appendRow([token, usuario, nombre, estacion, "ACTIVO", new Date(), expira, app]);  // ← app correcta
 
     try {
       const idx = rows.findIndex(r => r[0] === usuario);
@@ -122,7 +189,7 @@ function login(usuario, contrasena, estacion) {
 function validarToken(token) {
   const hT = _hoja(CFG.H_TOKENS);
   if (hT.getLastRow() < 2) return null;
-  const rows = hT.getRange(2, 1, hT.getLastRow() - 1, 7).getValues();
+  const rows = hT.getRange(2, 1, hT.getLastRow() - 1, 8).getValues(); // ← 7 a 8
   const idx = rows.findIndex(r => r[0] === token && r[4] === "ACTIVO");
   if (idx < 0) return null;
   const expira = rows[idx][6] instanceof Date ? rows[idx][6] : new Date(rows[idx][6]);
@@ -1294,7 +1361,7 @@ function _protocoloDefault(tipo) {
 function inicializarSistema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const esquemas = {
-    [CFG.H_TOKENS]: ["TOKEN", "USUARIO", "NOMBRE", "ESTACION", "ESTADO", "INICIO", "EXPIRA"],
+    [CFG.H_TOKENS]: ["TOKEN", "USUARIO", "NOMBRE", "ESTACION", "ESTADO", "INICIO", "EXPIRA", "APP"],
     [CFG.H_BARRIDOS]: ["ID_BARRIDO", "FECHA_HORA", "ESTACION", "UNIDAD", "REMOLQUE", "DOLLY",
       "REMOLQUE2", "TIPO_CARGA", "CARGA_STATUS", "SENTIDO", "LAT", "LNG",
       "UBICACION", "TIENE_GPS", "TIENE_CAMARA", "TIENE_CORTE", "CLIMA_AUT",
@@ -1315,7 +1382,7 @@ function inicializarSistema() {
     [CFG.H_TRASPASOS]: ["ID_TRP", "FECHA_INICIO", "UNIDAD", "EST_ORIGEN", "EST_DESTINO",
       "REMOLQUE", "DOLLY", "REMOLQUE2", "TIPO_CARGA", "OBSERVACIONES",
       "MONITORISTA", "ESTADO", "FECHA_RETORNO", "MONITORISTA_RETORNO"],
-    [CFG.H_ALERTAS_SAMSARA]: ["ID_ALERTA", "FECHA", "UNIDAD", "TIPO", "SEVERIDAD", "ESTADO", "DETALLES", "VIN", "URL_SAMSARA"],
+    [CFG.H_ALERTAS_SAMSARA]: ["ID_ALERTA", "FECHA", "UNIDAD", "TIPO", "SEVERIDAD", "ESTADO", "DETALLES", "VIN", "URL_SAMSARA","ATENDIDA_POR","FECHA_ATENCION","RESULTADO","ACCIONES"],
   };
   for (const [nom, cols] of Object.entries(esquemas)) {
     const h = ss.getSheetByName(nom) || ss.insertSheet(nom);
@@ -1428,10 +1495,12 @@ function doPost(e) {
     if (!body || body.length === 0) {
       return ContentService.createTextOutput('OK');
     }
+    // ✅ GUARDAR RAW para diagnóstico
+    //_guardarRawWebhook(body);
 
     // Parsear
     let payload = JSON.parse(body);
-    
+
     // Procesar
     procesarWebhookSamsara(payload);
     return ContentService.createTextOutput('OK');
@@ -1440,6 +1509,20 @@ function doPost(e) {
     return ContentService.createTextOutput('OK');
   }
 }
+// ── Guarda el JSON crudo en una hoja temporal ─────────────────────
+//function _guardarRawWebhook(body) {
+//  try {
+//    const ss = _libroPrincipal();
+//    let hoja = ss.getSheetByName('DEBUG_Webhooks');
+//    if (!hoja) {
+//      hoja = ss.insertSheet('DEBUG_Webhooks');
+//      hoja.appendRow(['FECHA', 'BODY_RAW']);
+//    }
+//    hoja.appendRow([new Date().toISOString(), body]);
+//  } catch (ex) {
+//    Logger.log('❌ _guardarRawWebhook: ' + ex.message);
+//  }
+//}
 
 /**
  * Valida la firma HMAC-SHA256 del webhook
@@ -1652,17 +1735,17 @@ function guardarAlertaSamsara(id, fecha, unidad, tipo, severidad, estado, detall
 function obtenerAlertasSamsara(token) {
   const sess = validarToken(token);
   if (!sess) return { ok: false, msg: "Sesión expirada" };
-  
+
   try {
     const ss = _libroPrincipal();
     const hoja = ss.getSheetByName(CFG.H_ALERTAS_SAMSARA);
-    
+
     if (!hoja || hoja.getLastRow() < 2) return { ok: true, data: [] };
-    
+
     const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
     const cols = ['ID_ALERTA', 'FECHA', 'UNIDAD', 'TIPO', 'SEVERIDAD', 'ESTADO', 'DETALLES', 'VIN', 'URL_SAMSARA'];
     const datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, 9).getValues();
-    
+
     const alertas = datos
       .filter(r => {
         const f = r[1] instanceof Date ? r[1] : new Date(r[1]);
@@ -1680,10 +1763,10 @@ function obtenerAlertasSamsara(token) {
         URL_SAMSARA: r[8],
         _severidad: r[4]
       }))
-      .sort((a,b) => new Date(b.FECHA_HORA) - new Date(a.FECHA_HORA));
-    
+      .sort((a, b) => new Date(b.FECHA_HORA) - new Date(a.FECHA_HORA));
+
     return { ok: true, data: alertas };
-  } catch(ex) {
+  } catch (ex) {
     return { ok: false, msg: ex.message };
   }
 }
@@ -1691,19 +1774,19 @@ function obtenerAlertasSamsara(token) {
 function marcarAlertaAtendida(token, idAlerta, monitorista) {
   const sess = validarToken(token);
   if (!sess) return { ok: false };
-  
+
   try {
     const hoja = _hoja(CFG.H_ALERTAS_SAMSARA);
     const rows = hoja.getRange(2, 1, hoja.getLastRow() - 1, 9).getValues();
     const idx = rows.findIndex(r => r[0] === idAlerta);
-    
+
     if (idx >= 0) {
       // Agregar columna de "Atendida por" si no existe
       hoja.getRange(idx + 2, 10).setValue(monitorista); // Columna 10
       return { ok: true };
     }
     return { ok: false };
-  } catch(ex) {
+  } catch (ex) {
     return { ok: false, msg: ex.message };
   }
 }
@@ -1789,9 +1872,24 @@ function procesarWebhookSamsara2(payload) {
   try {
     Logger.log('⚙️ Procesando AlertIncident...');
 
+    // ══════════════════════════════════════════
+    // 🔍 DIAGNÓSTICO COMPLETO — borrar después
+    Logger.log('=== PAYLOAD COMPLETO ===');
+    Logger.log(JSON.stringify(payload, null, 2));
+
     const data = payload.data || {};
     const conditions = data.conditions || [];
-    
+    Logger.log('=== CONDITIONS ===');
+    Logger.log(JSON.stringify(conditions, null, 2));
+
+    if (conditions.length > 0) {
+      Logger.log('=== CONDITION[0] ===');
+      Logger.log(JSON.stringify(conditions[0], null, 2));
+      Logger.log('description directo: [' + conditions[0].description + ']');
+      Logger.log('typeof description: ' + typeof conditions[0].description);
+    }
+    // ══════════════════════════════════════════
+
     if (!conditions.length) {
       Logger.log('⊘ Sin condiciones');
       return;
@@ -1799,39 +1897,42 @@ function procesarWebhookSamsara2(payload) {
 
     const condition = conditions[0];
     const details = condition.details || {};
-    
-    // DETECCIÓN AUTOMÁTICA: buscar objeto con "vehicle" O "trailer"
+
+    Logger.log('=== DETAILS KEYS ===');
+    Logger.log(JSON.stringify(Object.keys(details)));
+
     let vehicle = {};
-    let alertType = 'AlertIncident';
+    const configId = data.configurationId || '';
+    const configNombre = SAMSARA_CONFIG_NAMES[configId] || '';
+    const triggerNombre = (condition.description && condition.description.trim())
+      ? condition.description.trim()
+      : 'AlertIncident';
     let eventKey = '';
-    
+    // Columna 4: nombre de tu config si existe, si no el tipo de trigger
+    let alertType = configNombre || triggerNombre;
+
+    Logger.log('alertType inicial (de description): [' + alertType + ']');
     // Buscar recursivamente en details
     for (const key in details) {
       if (details[key] && typeof details[key] === 'object') {
         // Buscar vehicle o trailer
         if (details[key].vehicle) {
           vehicle = details[key].vehicle;
-          alertType = key
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, str => str.toUpperCase())
-            .trim();
+          // ✅ NO sobreescribir alertType — ya viene de condition.description
           eventKey = key;
-          Logger.log('🔍 Detectado evento (vehicle): ' + eventKey + ' → ' + alertType);
+          Logger.log('🔍 Detectado evento (vehicle): ' + eventKey + ' → alertType=' + alertType);
           break;
         }
         else if (details[key].trailer) {
           vehicle = details[key].trailer;
-          alertType = key
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, str => str.toUpperCase())
-            .trim();
+          // ✅ NO sobreescribir alertType — ya viene de condition.description
           eventKey = key;
-          Logger.log('🔍 Detectado evento (trailer): ' + eventKey + ' → ' + alertType);
+          Logger.log('🔍 Detectado evento (trailer): ' + eventKey + ' → alertType=' + alertType);
           break;
         }
       }
     }
-    
+
     // Si no encontró, buscar directamente en details
     if (!vehicle || !vehicle.id) {
       if (details.vehicle) {
@@ -1843,7 +1944,7 @@ function procesarWebhookSamsara2(payload) {
         alertType = 'Trailer Alert';
       }
     }
-    
+
     // Extraer datos
     const vehicleName = vehicle.name || vehicle.id || 'Desconocida';
     const vin = vehicle.serial || vehicle.trailerSerialNumber || vehicle.externalIds?.samsara?.vin || '';
@@ -1866,17 +1967,17 @@ function procesarWebhookSamsara2(payload) {
   }
 }
 function cargarAlertasSamsara() {
-  google.script.run.withSuccessHandler(function(res) {
+  google.script.run.withSuccessHandler(function (res) {
     if (!res.ok) return toast(res.msg, 'error');
-    
+
     const body = document.getElementById('alertasSamsaraBody');
     body.innerHTML = '';
-    
+
     if (!res.data || res.data.length === 0) {
       body.innerHTML = '<tr><td colspan="8" class="tbl-empty">Sin alertas</td></tr>';
       return;
     }
-    
+
     res.data.forEach(alerta => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -1893,19 +1994,42 @@ function cargarAlertasSamsara() {
       `;
       body.appendChild(tr);
     });
-    
+
     document.getElementById('nb-alertas-samsara').textContent = res.data.length;
     document.getElementById('nb-alertas-samsara').classList.remove('hidden');
-    
+
   }).obtenerAlertasSamsara(token);
 }
 
 function marcarAtendida(idAlerta, unidad) {
   const monitorista = sess.nombre;
-  google.script.run.withSuccessHandler(function(res) {
+  google.script.run.withSuccessHandler(function (res) {
     if (res.ok) {
       document.getElementById('atendida-' + idAlerta).textContent = monitorista;
       toast('Alerta marcada como atendida', 'success');
     }
   }).marcarAlertaAtendida(token, idAlerta, monitorista);
+}
+
+
+function marcarAlertaAtendida(token, idAlerta, monitorista, resultado, acciones) {
+  const sess = validarToken(token);
+  if (!sess) return { ok: false, msg: "Sesión expirada" };
+
+  try {
+    const hoja = _hoja(CFG.H_ALERTAS_SAMSARA);
+    const rows = hoja.getRange(2, 1, hoja.getLastRow() - 1, 9).getValues();
+    const idx = rows.findIndex(r => r[0] === idAlerta);
+
+    if (idx >= 0) {
+      hoja.getRange(idx + 2, 10).setValue(monitorista); // Atendida por
+      hoja.getRange(idx + 2, 11).setValue(new Date().toISOString()); // Fecha atención
+      hoja.getRange(idx + 2, 12).setValue(resultado); // Resultado
+      hoja.getRange(idx + 2, 13).setValue(acciones); // Acciones
+      return { ok: true };
+    }
+    return { ok: false, msg: "Alerta no encontrada" };
+  } catch (ex) {
+    return { ok: false, msg: ex.message };
+  }
 }

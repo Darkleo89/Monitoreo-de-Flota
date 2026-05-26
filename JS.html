@@ -2,7 +2,7 @@
   // ╔══════════════════════════════════════════════════════════════╗
 // ║  MONITOR DE FLOTA PRO — JS.html v6.1                        ║
 // ╚══════════════════════════════════════════════════════════════╝
-
+const BASE_URL = 'https://script.google.com/macros/s/AKfycbyv8g3_EXxe8IEvc41MhC1CdWyYE8gZM7MvxLEJmtH2u1sSnr_Lq3Y2DGRbdYL3kBG8-w/exec';
 const APP = {
   token:       null,
   usuario:     null,
@@ -215,6 +215,10 @@ function cambiarEstacion(est) {
 //  NAVEGACIÓN
 // ══════════════════════════════════════════════════════════════════
 function showView(id, el) {
+  if (id === 'alertas-samsara') {
+    window.open(BASE_URL + '?app=alertas', '_blank');
+    return;
+  }
   document.querySelectorAll('.view').forEach(v => {
     v.classList.add('hidden');
     v.classList.remove('active');

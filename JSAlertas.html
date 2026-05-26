@@ -1,0 +1,890 @@
+<script>
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   ALERTAS SAMSARA · GrupoGal — Lógica de la aplicación
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+// ── Estado global ────────────────────────────────────────────────────────────
+let token = '';
+let sess  = {};
+let alertasActuales = [];
+let alertaEnEdicion = null;
+let _chartTipos        = null;
+let _chartMonitoristas = null;
+let _chartEvolucion    = null;
+let _sonidoActivo      = false;
+let _alertasUrgentes   = [];
+
+// Palabras clave que disparan sonido crítico
+const PALABRAS_CRITICAS = ['frenada', 'viraje brusco', 'accidente', 'jammer'];
+// ── Roles ────────────────────────────────────────────────────────────────────
+const ROLES_SUPERVISOR = ['Supervisor', 'Jefe Monitoreo', 'Admin', 'Administrador'];
+const ROLES_ADMIN      = ['Admin', 'Administrador'];
+
+function esSup() {
+  return ROLES_SUPERVISOR.includes(sess.rol);
+}
+
+function esAdmin() {
+  return ROLES_ADMIN.includes(sess.rol);
+}
+// Tras hacer login y conocer el rol:
+function aplicarPermisosPorRol(rol) {
+  const esMonitorista = rol === 'Monitorista';
+  document.getElementById('tab-btn-desempeno').classList.toggle('hidden', esMonitorista);
+  document.getElementById('tab-btn-historico').classList.toggle('hidden', esMonitorista);
+}
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTENTICACIÓN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function doLogin() {
+  const usuario    = document.getElementById('l-usuario').value.trim();
+  const contrasena = document.getElementById('l-pass').value;
+  const estacion   = document.getElementById('l-estacion').value;
+
+  if (!usuario || !contrasena || !estacion) {
+    showLoginError('Completa todos los campos');
+    return;
+  }
+
+  const btn = document.getElementById('btnLogin');
+  document.getElementById('loginSpin').classList.remove('hidden');
+  btn.disabled = true;
+
+  google.script.run
+  .withSuccessHandler(function(res) {
+  document.getElementById('loginSpin').classList.add('hidden');
+  btn.disabled = false;
+
+  if (!res.ok) {
+    showLoginError(res.msg);
+    return;
+  }
+
+  // ✅ Asignar PRIMERO, luego iniciar
+  token = res.token;
+  sess  = res.usuario;
+  iniciarApp();
+    })
+    .withFailureHandler(function(err) {
+      document.getElementById('loginSpin').classList.add('hidden');
+      btn.disabled = false;
+      showLoginError('Error de conexión: ' + err.message);
+    })
+    .login(usuario, contrasena, estacion, 'alertas');
+}
+
+function iniciarApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+
+  document.getElementById('tuName').textContent   = sess.nombre;
+  document.getElementById('tuMeta').textContent   = sess.estacion;
+  document.getElementById('tuAvatar').textContent = sess.nombre.charAt(0).toUpperCase();
+  document.getElementById('rolBadge').textContent = sess.rol;
+
+  // Pestañas por rol
+  const esMonitorista = sess.rol === 'Monitorista';
+  document.getElementById('tab-btn-desempeno').classList.toggle('hidden', esMonitorista);
+  document.getElementById('tab-btn-historico').classList.toggle('hidden', esMonitorista);
+
+  // Columnas extras solo para supervisores
+  if (!esSup()) {
+    document.getElementById('th-tiempo').style.display = 'none';
+    document.getElementById('th-resp').style.display   = 'none';
+  }
+
+  // Fechas por defecto histórico
+  const hoy    = new Date();
+  const hace30 = new Date();
+  hace30.setDate(hace30.getDate() - 30);
+  document.getElementById('hist-hasta').value = hoy.toISOString().slice(0, 10);
+  document.getElementById('hist-desde').value = hace30.toISOString().slice(0, 10);
+
+  cargarAlertasSamsara();
+  actualizarReloj();
+  setInterval(actualizarReloj, 1000);
+  setInterval(cargarAlertasSamsara, 30000);
+}
+
+function doLogout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+
+  google.script.run.logout(token);
+  token = '';
+  sess  = {};
+
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NAVEGACIÓN: PESTAÑAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function switchTab(name) {
+  ['alertas', 'desempeno', 'historico'].forEach(t => {
+    document.getElementById('tab-btn-' + t)?.classList.toggle('active', t === name);
+    document.getElementById('tab-' + t)?.classList.toggle('active', t === name);
+  });
+
+  if (name === 'desempeno') cargarDesempeno();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PESTAÑA 1: ALERTAS SAMSARA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function cargarAlertasSamsara() {
+  if (!token) {
+    toast('Sin sesión activa', 'error');
+    return;
+  }
+  google.script.run
+    .withSuccessHandler(renderAlertas)
+    .withFailureHandler(err => toast('Error: ' + err.message, 'error'))
+    .obtenerAlertasSamsara(token);
+}
+
+function renderAlertas(res) {
+  // Guard contra null/undefined
+  if (!res) {
+    toast('Error: el servidor no respondió', 'error');
+    return;
+  }
+  if (!res.ok) {
+    toast(res.msg || 'Error desconocido', 'error');
+    return;
+  }
+
+  const filtroEstado    = document.getElementById('filtroEstado').value;
+  const filtroSeveridad = document.getElementById('filtroSeveridad').value;
+
+  alertasActuales = (res.data || []).filter(a => {
+    if (filtroEstado && a.ESTADO !== filtroEstado)
+      return false;
+    if (filtroSeveridad && a.SEVERIDAD !== filtroSeveridad)
+      return false;
+    return true;
+  });
+
+  // Actualizar KPIs
+  const abiertas  = alertasActuales.filter(a => a.ESTADO === 'abierto').length;
+  const resueltas = alertasActuales.filter(a => a.ESTADO === 'resuelto').length;
+  const atendidas = alertasActuales.filter(a => a.ATENDIDA_POR && a.ATENDIDA_POR.trim()).length;
+
+  document.getElementById('kpi-abiertas').textContent  = abiertas;
+  document.getElementById('kpi-resueltas').textContent = resueltas;
+  document.getElementById('kpi-total').textContent     = alertasActuales.length;
+  document.getElementById('kpi-atendidas').textContent = atendidas;
+  document.getElementById('conteo-alertas').textContent = alertasActuales.length + ' alertas';
+
+  // Badge de pestaña con contador
+  const nb = document.getElementById('nb-alertas-abiertas');
+  if (abiertas > 0) {
+    nb.textContent = abiertas;
+    nb.classList.remove('hidden');
+  } else {
+    nb.classList.add('hidden');
+  }
+
+  // Panel de alertas urgentes
+  _alertasUrgentes = alertasActuales.filter(a => a._alerta && !a.ATENDIDA_POR);
+  renderUrgentes(_alertasUrgentes);
+
+  // Tabla principal
+  const body = document.getElementById('alertasSamsaraBody');
+  body.innerHTML = '';
+
+  if (!alertasActuales.length) {
+    body.innerHTML = '<tr><td colspan="10" class="tbl-empty">Sin alertas para los filtros seleccionados</td></tr>';
+    return;
+  }
+
+  alertasActuales.forEach(a => {
+    const tr = document.createElement('tr');
+    const esUrgente = a._alerta && !a.ATENDIDA_POR;
+
+    if (esUrgente) tr.className = 'row-alerta row-alerta-pulse';
+
+    const sevColor = a.SEVERIDAD === 'alert' ? '#E24B4A' : '#EF9F27';
+    const minStr   = a._minSinAtender != null
+      ? timerBadge(a._minSinAtender, !!a.ATENDIDA_POR)
+      : '—';
+    const respStr  = a._minRespuesta != null
+      ? `<span class="badge b-green">${a._minRespuesta} min</span>`
+      : '—';
+
+    const tiempoCol = esSup()
+      ? `<td>${minStr}</td>`
+      : '';
+    const respCol = esSup()
+      ? `<td>${respStr}</td>`
+      : '';
+
+    tr.innerHTML = `
+      <td style="text-align:center;color:${sevColor};font-size:14px;line-height:1">●</td>
+      <td style="font-family:monospace;font-size:11px">${fmtHora(a.FECHA_HORA)}</td>
+      <td><strong>${a.UNIDAD}</strong></td>
+      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.TIPO}</td>
+      <td><span class="badge" style="background:${a.SEVERIDAD === 'alert' ? '#FCEBEB' : '#FAEEDA'};color:${a.SEVERIDAD === 'alert' ? '#A32D2D' : '#854F0B'}">${a.SEVERIDAD || 'normal'}</span></td>
+      <td><span class="badge ${a.ESTADO === 'abierto' ? 'b-red' : 'b-green'}">${a.ESTADO}</span></td>
+      ${tiempoCol}
+      <td>${a.ATENDIDA_POR || '<span style="color:var(--txt2)">—</span>'}</td>
+      ${respCol}
+      <td style="white-space:nowrap">
+        ${!a.ATENDIDA_POR
+          ? `<button class="btn-xs" onclick="abrirModalAtender('${a.ID_ALERTA}','${esc(a.UNIDAD)}','${esc(a.TIPO)}')">Atender</button>`
+          : `<span style="color:var(--txt2);font-size:11px">✓ Atendida</span>`}
+        ${a.URL_SAMSARA
+          ? `<button class="btn-xs" style="margin-left:4px" onclick="window.open('${a.URL_SAMSARA}','_blank')">Samsara →</button>`
+          : ''}
+      </td>`;
+
+    body.appendChild(tr);
+  });
+}
+
+function renderUrgentes(lista) {
+  const panel = document.getElementById('panel-urgentes');
+
+  if (!lista.length) {
+    panel.classList.add('hidden');
+    detenerSonido();
+    return;
+  }
+
+  panel.classList.remove('hidden');
+
+  document.getElementById('urgentes-titulo').textContent =
+    lista.length + ' alerta' + (lista.length > 1 ? 's' : '') + ' sin atender por más de 10 min';
+
+  const body = document.getElementById('urgentesBody');
+  body.innerHTML = '';
+
+  lista.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="color:#E24B4A;font-size:14px;text-align:center">●</td>
+      <td>${timerBadge(a._minSinAtender, false)}</td>
+      <td><strong>${a.UNIDAD}</strong></td>
+      <td>${a.TIPO}</td>
+      <td><span class="badge" style="background:${a.SEVERIDAD === 'high' ? '#FCEBEB' : '#FAEEDA'};color:${a.SEVERIDAD === 'high' ? '#A32D2D' : '#854F0B'}">${a.SEVERIDAD || 'normal'}</span></td>
+      <td><button class="btn-xs" onclick="abrirModalAtender('${a.ID_ALERTA}','${esc(a.UNIDAD)}','${esc(a.TIPO)}')">Atender</button></td>`;
+
+    body.appendChild(tr);
+  });
+
+  reproducirSonido(lista);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PESTAÑA 2: DESEMPEÑO POR MONITORISTA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function cargarDesempeno() {
+  google.script.run
+    .withSuccessHandler(renderDesempeno)
+    .withFailureHandler(err => toast('Error: ' + err.message, 'error'))
+    .obtenerDesempenoMonitoristas(token, null, null);
+}
+
+function renderDesempeno(res) {
+  if (!res.ok) {
+    toast(res.msg, 'error');
+    return;
+  }
+
+  const { data, resumen, tiposTop } = res;
+
+  document.getElementById('dp-pct').textContent = resumen.pctGlobal + '%';
+  document.getElementById('dp-sin').textContent = resumen.sinAtender;
+  document.getElementById('dp-mon').textContent = data.length;
+
+  // Tiempo promedio global
+  const tiempos = data.map(d => d.tRespProm).filter(t => t != null);
+  const tProm = tiempos.length
+    ? (tiempos.reduce((a, b) => a + b, 0) / tiempos.length).toFixed(1)
+    : '—';
+
+  document.getElementById('dp-tresp').textContent = tProm !== '—' ? tProm + ' min' : '—';
+
+  // Tabla de ranking
+  const rb = document.getElementById('rankingBody');
+  rb.innerHTML = '';
+
+  data.forEach((d, i) => {
+    const pctColor = d.pct >= 80 ? '#639922' : d.pct >= 50 ? '#378ADD' : '#EF9F27';
+    const tr = document.createElement('tr');
+
+    tr.innerHTML = `
+      <td><span class="rank rank-${i < 3 ? i + 1 : ''}">${i + 1}</span></td>
+      <td><strong>${d.nombre}</strong></td>
+      <td>${d.atendidas}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div class="pct-bar"><div class="pct-fill" style="width:${d.pct}%;background:${pctColor}"></div></div>
+          <span style="font-size:12px;color:${pctColor};font-weight:500">${d.pct}%</span>
+        </div>
+      </td>
+      <td>${d.tRespProm != null
+        ? `<span class="badge ${d.tRespProm <= 5 ? 'b-green' : d.tRespProm <= 10 ? 'b-amber' : 'b-red'}">${d.tRespProm} min</span>`
+        : '—'}</td>`;
+
+    rb.appendChild(tr);
+  });
+
+  if (!data.length) {
+    rb.innerHTML = '<tr><td colspan="5" class="tbl-empty">Sin datos de atención hoy</td></tr>';
+  }
+
+  // Gráfica: Tipos más frecuentes
+  const labelsTipos = (tiposTop || []).map(t =>
+    t.tipo.length > 18 ? t.tipo.slice(0, 16) + '…' : t.tipo
+  );
+  const dataTipos   = (tiposTop || []).map(t => t.cnt);
+  const coloresTipos = ['#378ADD', '#EF9F27', '#E24B4A', '#639922', '#A855F7'];
+
+  if (_chartTipos) _chartTipos.destroy();
+  _chartTipos = new Chart(document.getElementById('chartTipos'), {
+    type: 'bar',
+    data: {
+      labels: labelsTipos,
+      datasets: [{
+        data: dataTipos,
+        backgroundColor: coloresTipos,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          ticks: { color: '#888', font: { size: 11 } },
+          grid: { display: false }
+        },
+        y: {
+          ticks: { color: '#888', font: { size: 11 }, stepSize: 1 },
+          grid: { color: 'rgba(128,128,128,0.1)' },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+
+  // Gráfica: % de atención por monitorista
+  const nombres    = data.map(d => d.nombre);
+  const pcts       = data.map(d => d.pct);
+  const pctsSin    = data.map(d => 100 - d.pct);
+  const legendEl   = document.getElementById('legendMonitoristas');
+
+  legendEl.innerHTML = nombres.map((n, i) => {
+    const c = ['#378ADD', '#639922', '#EF9F27', '#A855F7', '#E24B4A'][i % 5];
+    return `<span><span class="dot" style="background:${c}"></span>${n}</span>`;
+  }).join('');
+
+  if (_chartMonitoristas) _chartMonitoristas.destroy();
+  _chartMonitoristas = new Chart(document.getElementById('chartMonitoristas'), {
+    type: 'bar',
+    data: {
+      labels: nombres,
+      datasets: [
+        {
+          label: '% atendidas',
+          data: pcts,
+          backgroundColor: '#378ADD',
+          borderRadius: 4,
+          barPercentage: 0.5
+        },
+        {
+          label: '% sin atender',
+          data: pctsSin,
+          backgroundColor: 'rgba(128,128,128,0.15)',
+          borderRadius: 4,
+          barPercentage: 0.5
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + ctx.raw + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { color: '#888', font: { size: 12 } },
+          grid: { display: false }
+        },
+        y: {
+          stacked: true,
+          ticks: {
+            color: '#888',
+            font: { size: 11 },
+            callback: v => v + '%'
+          },
+          grid: { color: 'rgba(128,128,128,0.1)' },
+          max: 100,
+          beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PESTAÑA 3: HISTÓRICO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function cargarHistorico() {
+  const desde       = document.getElementById('hist-desde').value;
+  const hasta       = document.getElementById('hist-hasta').value;
+  const monitorista = document.getElementById('hist-monitorista').value;
+
+  if (!desde || !hasta) {
+    toast('Selecciona el rango de fechas', 'warn');
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(renderHistorico)
+    .withFailureHandler(err => toast('Error: ' + err.message, 'error'))
+    .obtenerHistoricoAlertas(
+      token,
+      desde + 'T00:00:00',
+      hasta + 'T23:59:59',
+      monitorista || null
+    );
+}
+
+function renderHistorico(res) {
+  if (!res.ok) {
+    toast(res.msg, 'error');
+    return;
+  }
+
+  const { data, evolucion, monitoristasUnicos } = res;
+  const total    = data.length;
+  const atendidas = data.filter(r => r.ATENDIDA_POR && r.ATENDIDA_POR.trim()).length;
+  const pct      = total > 0 ? Math.round((atendidas / total) * 100) : 0;
+
+  document.getElementById('h-total').textContent = total;
+  document.getElementById('h-pct').textContent   = pct + '%';
+  document.getElementById('h-dias').textContent  = evolucion.length;
+
+  // Poblar selector de monitorista
+  const sel = document.getElementById('hist-monitorista');
+  const curVal = sel.value;
+  sel.innerHTML = '<option value="">Todos los monitoristas</option>';
+
+  monitoristasUnicos.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    if (m === curVal) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  // Tiempo promedio global
+  const tiempos = data
+    .filter(r => r.ATENDIDA_POR && r.FECHA_ATEN)
+    .map(r => {
+      const min = Math.round((new Date(r.FECHA_ATEN) - new Date(r.FECHA_HORA)) / 60000);
+      return min >= 0 && min < 600 ? min : null;
+    })
+    .filter(t => t != null);
+
+  const tProm = tiempos.length
+    ? (tiempos.reduce((a, b) => a + b, 0) / tiempos.length).toFixed(1)
+    : '—';
+
+  document.getElementById('h-tresp').textContent = tProm !== '—' ? tProm + ' min' : '—';
+
+  // Detalle por monitorista
+  const mapaM = {};
+
+  data.forEach(r => {
+    const m = (r.ATENDIDA_POR || '').trim();
+    if (!m) return;
+
+    if (!mapaM[m]) {
+      mapaM[m] = { atendidas: 0, tiempos: [] };
+    }
+
+    mapaM[m].atendidas++;
+
+    if (r.FECHA_ATEN) {
+      const min = Math.round((new Date(r.FECHA_ATEN) - new Date(r.FECHA_HORA)) / 60000);
+      if (min >= 0 && min < 600) {
+        mapaM[m].tiempos.push(min);
+      }
+    }
+  });
+
+  const hb = document.getElementById('histDetalleBody');
+  hb.innerHTML = '';
+
+  Object.entries(mapaM)
+    .sort((a, b) => b[1].atendidas - a[1].atendidas)
+    .forEach(([nombre, d]) => {
+      const pctM = total > 0 ? Math.round((d.atendidas / total) * 100) : 0;
+      const tP   = d.tiempos.length
+        ? (d.tiempos.reduce((a, b) => a + b, 0) / d.tiempos.length).toFixed(1)
+        : null;
+      const pctColor = pctM >= 80 ? '#639922' : pctM >= 50 ? '#378ADD' : '#EF9F27';
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${nombre}</strong></td>
+        <td>${d.atendidas}</td>
+        <td>${total}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div class="pct-bar"><div class="pct-fill" style="width:${pctM}%;background:${pctColor}"></div></div>
+            <span style="font-size:12px;color:${pctColor};font-weight:500">${pctM}%</span>
+          </div>
+        </td>
+        <td>${tP
+          ? `<span class="badge ${tP <= 5 ? 'b-green' : tP <= 10 ? 'b-amber' : 'b-red'}">${tP} min</span>`
+          : '—'}</td>`;
+
+      hb.appendChild(tr);
+    });
+
+  if (!Object.keys(mapaM).length) {
+    hb.innerHTML = '<tr><td colspan="5" class="tbl-empty">Sin alertas atendidas en este periodo</td></tr>';
+  }
+
+  // Gráfica de evolución
+  const colores = ['#378ADD', '#639922', '#EF9F27', '#A855F7', '#E24B4A'];
+  const dias    = evolucion.map(d => d.dia.slice(5));
+  const legEl   = document.getElementById('legendEvolucion');
+
+  if (_chartEvolucion) _chartEvolucion.destroy();
+
+  if (monitoristasUnicos.length > 0) {
+    legEl.innerHTML = monitoristasUnicos
+      .map((m, i) => `<span><span class="dot" style="background:${colores[i % 5]}"></span>${m}</span>`)
+      .join('');
+
+    _chartEvolucion = new Chart(document.getElementById('chartEvolucion'), {
+      type: 'line',
+      data: {
+        labels: dias,
+        datasets: monitoristasUnicos.map((m, i) => ({
+          label: m,
+          data: evolucion.map(d => d.porMonitorista[m] || 0),
+          borderColor: colores[i % 5],
+          backgroundColor: 'transparent',
+          pointRadius: 3,
+          tension: 0.3,
+          borderDash: i === 0 ? [] : [4, 3]
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: {
+              color: '#888',
+              font: { size: 11 },
+              maxRotation: 0,
+              autoSkip: true,
+              maxTicksLimit: 10
+            },
+            grid: { color: 'rgba(128,128,128,0.1)' }
+          },
+          y: {
+            ticks: {
+              color: '#888',
+              font: { size: 11 },
+              callback: v => v + '%'
+            },
+            grid: { color: 'rgba(128,128,128,0.1)' },
+            min: 0,
+            max: 100
+          }
+        }
+      }
+    });
+  } else {
+    legEl.innerHTML = '<span><span class="dot" style="background:#378ADD"></span>Global</span>';
+
+    _chartEvolucion = new Chart(document.getElementById('chartEvolucion'), {
+      type: 'line',
+      data: {
+        labels: dias,
+        datasets: [{
+          label: '% atención',
+          data: evolucion.map(d => d.pct),
+          borderColor: '#378ADD',
+          backgroundColor: 'transparent',
+          pointRadius: 3,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: {
+              color: '#888',
+              font: { size: 11 },
+              maxRotation: 0,
+              autoSkip: true,
+              maxTicksLimit: 10
+            },
+            grid: { color: 'rgba(128,128,128,0.1)' }
+          },
+          y: {
+            ticks: {
+              color: '#888',
+              font: { size: 11 },
+              callback: v => v + '%'
+            },
+            grid: { color: 'rgba(128,128,128,0.1)' },
+            min: 0,
+            max: 100
+          }
+        }
+      }
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODAL: MARCAR ALERTA COMO ATENDIDA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function abrirModalAtender(id, unidad, tipo) {
+  alertaEnEdicion = id;
+
+  document.getElementById('atender-unidad').value    = unidad;
+  document.getElementById('atender-tipo').value      = tipo;
+  document.getElementById('atender-acciones').value  = '';
+  document.getElementById('atender-resultado').value = '';
+
+  document.getElementById('modalAtender').classList.remove('hidden');
+}
+
+function hideModal(id) {
+  document.getElementById(id).classList.add('hidden');
+}
+
+function guardarAtencion() {
+  const resultado = document.getElementById('atender-resultado').value;
+  const acciones  = document.getElementById('atender-acciones').value;
+
+  if (!resultado) {
+    toast('Selecciona un resultado', 'warn');
+    return;
+  }
+
+  const sp = document.getElementById('spAtender');
+  sp.classList.remove('hidden');
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      sp.classList.add('hidden');
+
+      if (res.ok) {
+        hideModal('modalAtender');
+        toast('Alerta marcada como atendida', 'success');
+        cargarAlertasSamsara();
+      } else {
+        toast(res.msg || 'Error al guardar', 'error');
+      }
+    })
+    .withFailureHandler(err => {
+      sp.classList.add('hidden');
+      toast(err.message, 'error');
+    })
+    .marcarAlertaAtendida(token, alertaEnEdicion, sess.nombre, resultado, acciones);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIO: ALERTAS URGENTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function reproducirSonido() {
+  if (_sonidoActivo) return;
+
+  _sonidoActivo = true;
+
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function beep(freq, start, dur) {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur + 0.05);
+    }
+
+    beep(880, 0, 0.12);
+    beep(880, 0.18, 0.12);
+    beep(1100, 0.36, 0.2);
+  } catch (e) {
+    // Navegador no soporta Web Audio API
+  }
+
+  setTimeout(() => {
+    _sonidoActivo = false;
+  }, 10000);
+}
+
+function detenerSonido() {
+  _sonidoActivo = false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILIDADES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function timerBadge(min, atendida) {
+  if (atendida) return '—';
+
+  const cls = min < 5 ? 'b-green' : min < 10 ? 'b-amber' : 'b-red';
+  return `<span class="badge ${cls}">${min} min</span>`;
+}
+
+function fmtHora(val) {
+  if (!val) return '—';
+
+  const d = val instanceof Date ? val : new Date(val);
+
+  if (isNaN(d)) return val;
+
+  return d.toLocaleTimeString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function esc(s) {
+  return (s || '').toString()
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;');
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+
+  setTimeout(() => el.classList.add('hidden'), 4000);
+}
+
+function toast(msg, type) {
+  const cont = document.getElementById('toastCont');
+  const el   = document.createElement('div');
+
+  el.className = 'toast toast-' + (type || 'info');
+  el.textContent = msg;
+
+  cont.appendChild(el);
+
+  setTimeout(() => el.remove(), 3500);
+}
+
+function actualizarReloj() {
+  const r = document.getElementById('reloj');
+  if (r) r.textContent = new Date().toLocaleTimeString('es-MX');
+}
+
+function togglePass() {
+  const input = document.getElementById('l-pass');
+  const icon  = document.getElementById('eyeIcon');
+
+  input.type = input.type === 'password' ? 'text' : 'password';
+  icon.style.opacity = input.type === 'password' ? '.6' : '1';
+}
+
+function reproducirSonido(alertasUrgentes) {
+  if (_sonidoActivo) return;
+  _sonidoActivo = true;
+
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const critica = _esCritica(alertasUrgentes || []);
+
+    function beep(freq, start, dur, vol) {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      osc.type = critica ? 'square' : 'sine';
+      gain.gain.setValueAtTime(vol || 0.3, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur + 0.05);
+    }
+
+    if (critica) {
+      // 🚨 Sonido CRÍTICO: agresivo, triple beep descendente
+      beep(1400, 0.00, 0.15, 0.5);
+      beep(1100, 0.20, 0.15, 0.5);
+      beep(800,  0.40, 0.25, 0.5);
+      beep(1400, 0.70, 0.15, 0.5);
+      beep(1100, 0.90, 0.15, 0.5);
+      beep(800,  1.10, 0.35, 0.5);
+    } else {
+      // 🔔 Sonido normal: suave, dos beeps
+      beep(880,  0.00, 0.12);
+      beep(880,  0.18, 0.12);
+      beep(1100, 0.36, 0.20);
+    }
+  } catch(e) { /* Web Audio no soportado */ }
+
+  setTimeout(() => { _sonidoActivo = false; }, 12000);
+}
+
+function detenerSonido() {
+  _sonidoActivo = false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INICIALIZACIÓN AL CARGAR LA PÁGINA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+window.addEventListener('load', function() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res || !res.length) return;
+
+      const sel = document.getElementById('l-estacion');
+      sel.innerHTML = '<option value="">Selecciona estación</option>';
+
+      res.forEach(est => {
+        const opt = document.createElement('option');
+        opt.value = est.circuito;
+        opt.textContent = est.detalle;
+        sel.appendChild(opt);
+      });
+    })
+    .obtenerEstacionesPublico();
+});
+</script>
